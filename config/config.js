@@ -6,8 +6,8 @@
 
 window.CONFIG = {
   GEMINI_API_KEY: "COLE_SUA_CHAVE_AQUI",
-  GEMINI_MODEL: "gemini-2.5-flash",   // qualquer modelo "Flash" disponível na sua conta
+  GEMINI_MODEL: "gemini-1.5-flash",   // Corrigido para o modelo Flash oficial e estável
   USER_NAME: "Weverton",
   LOCALE: "pt-BR",
-  MAX_HISTORY_TURNS: 8                // quantas trocas anteriores o Gemini lembra
+  MAX_HISTORY_TURNS: 8
 };
