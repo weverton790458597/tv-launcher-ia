@@ -1,8 +1,11 @@
 (function () {
   "use strict";
 
+  const DEFAULT_MODEL = "gemini-3.8-flash";
+  const FALLBACK_MODEL = "gemini-3.5-flash";  // reserva quando o modelo principal está sobrecarregado (503)   // gemini-1.5-flash foi desativado pelo Google (retorna 404)
+
   const CFG = Object.assign(
-    { GEMINI_API_KEY: "", GEMINI_MODEL: "gemini-1.5-flash", USER_NAME: "", LOCALE: "pt-BR", MAX_HISTORY_TURNS: 8, VOICE: "" },
+    { GEMINI_API_KEY: "", GEMINI_MODEL: DEFAULT_MODEL, USER_NAME: "", LOCALE: "pt-BR", MAX_HISTORY_TURNS: 8, VOICE: "" },
     window.CONFIG || {}
   );
   const NATIVE = typeof window.Android !== "undefined";
@@ -188,36 +191,57 @@
     if (!CFG.GEMINI_API_KEY || CFG.GEMINI_API_KEY.indexOf("COLE_") === 0) {
       throw new Error("NO_KEY");
     }
-    const modelName = CFG.GEMINI_MODEL || "gemini-1.5-flash";
-    const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-      encodeURIComponent(modelName) + ":generateContent";
+    
+    // Garante que o modelo tenha o prefixo correto exigido pela API v1beta
+    let rawModel = (CFG.GEMINI_MODEL || DEFAULT_MODEL).trim();
+    if (rawModel.startsWith("models/")) {
+        rawModel = rawModel.replace("models/", "");
+    }
+    
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents,
       generationConfig: {
         temperature: temperature,
-        maxOutputTokens: 400,
+        maxOutputTokens: 1024,   // folga para o "thinking" dos modelos Gemini 3 não cortar a resposta
         responseMimeType: "application/json",
+        thinkingConfig: { thinkingLevel: "low" },   // respostas rápidas para voz
       },
     };
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 20000);
-    let res;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": CFG.GEMINI_API_KEY },
-        body: JSON.stringify(body),
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(to);
+
+    // Tenta o modelo escolhido (2x) e, se o servidor estiver sobrecarregado (503/500/502/504/429),
+    // cai para o modelo reserva.
+    const attempts = [rawModel, rawModel];
+    if (rawModel !== FALLBACK_MODEL) attempts.push(FALLBACK_MODEL);
+    const RETRYABLE = [429, 500, 502, 503, 504];
+
+    let res = null;
+    let lastErr = null;
+    for (let i = 0; i < attempts.length; i++) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(attempts[i])}:generateContent?key=${encodeURIComponent(CFG.GEMINI_API_KEY)}`;
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 20000);
+      try {
+        const r = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": CFG.GEMINI_API_KEY },
+          body: JSON.stringify(body),
+          signal: ctrl.signal,
+        });
+        if (r.ok) { res = r; break; }
+        const err = new Error("HTTP_" + r.status);
+        err.status = r.status;
+        lastErr = err;
+        if (RETRYABLE.indexOf(r.status) === -1) throw err;   // erro definitivo (400/403/404): não adianta repetir
+      } catch (e) {
+        if (e && e.status && RETRYABLE.indexOf(e.status) === -1) throw e;
+        lastErr = e;
+      } finally {
+        clearTimeout(to);
+      }
+      if (i < attempts.length - 1) await new Promise((ok) => setTimeout(ok, 800));
     }
-    if (!res.ok) {
-      const err = new Error("HTTP_" + res.status);
-      err.status = res.status;
-      throw err;
-    }
+    if (!res) throw lastErr || new Error("FAILED");
     const data = await res.json();
     const parts = data && data.candidates && data.candidates[0] && data.candidates[0].content &&
       data.candidates[0].content.parts;
@@ -245,6 +269,7 @@
     if (e && e.name === "AbortError") return "O Gemini demorou demais para responder. Tente de novo.";
     if (e && (e.status === 400 || e.status === 403)) return "A chave do Gemini foi recusada. Verifique nas Configurações.";
     if (e && e.status === 404) return "Modelo não encontrado. Verifique o nome do modelo nas Configurações.";
+    if (e && e.status === 503) return "O Gemini está sobrecarregado agora. Tente de novo em instantes.";
     if (e && e.status === 429) return "Muitos pedidos ao Gemini agora. Tente de novo em instantes.";
     if (!navigator.onLine) return "A TV está sem internet.";
     return "Não consegui falar com o Gemini agora.";
@@ -363,7 +388,9 @@
 
   function loadSettings() {
     CFG.GEMINI_API_KEY = storeGet("api_key") || BASE_CFG.GEMINI_API_KEY;
-    CFG.GEMINI_MODEL = storeGet("model") || "gemini-1.5-flash";
+    // Migra modelos antigos/desativados que ficaram salvos no aparelho.
+    const savedModel = storeGet("model");
+    CFG.GEMINI_MODEL = (savedModel && !/^gemini-(1\.|2\.0)/.test(savedModel)) ? savedModel : DEFAULT_MODEL;
     CFG.USER_NAME = storeGet("user_name") || BASE_CFG.USER_NAME;
     CFG.VOICE = storeGet("voice") || "";
   }
@@ -386,7 +413,7 @@
     el.setKey.value = hasKey() ? CFG.GEMINI_API_KEY : "";
     el.setKey.type = "password";
     el.setKeyToggle.textContent = "Mostrar chave";
-    el.setModel.value = CFG.GEMINI_MODEL || "gemini-1.5-flash";
+    el.setModel.value = CFG.GEMINI_MODEL || DEFAULT_MODEL;
     el.setName.value = CFG.USER_NAME || "";
     loadVoices();
     setMsg(firstRun ? "Digite ou cole sua chave do Gemini para começar." : "", "");
@@ -405,7 +432,7 @@
   function saveSettings() {
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
     const ok = storeSet("api_key", key) &&
-      storeSet("model", el.setModel.value.trim() || "gemini-1.5-flash") &&
+      storeSet("model", el.setModel.value.trim() || DEFAULT_MODEL) &&
       storeSet("user_name", el.setName.value.trim()) &&
       storeSet("voice", el.setVoice.value);
     if (!ok) { setMsg("Não consegui salvar. Tente de novo.", "err"); return; }
@@ -418,7 +445,7 @@
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
     if (!key) { setMsg("Digite a chave primeiro.", "err"); return; }
     CFG.GEMINI_API_KEY = key;
-    CFG.GEMINI_MODEL = el.setModel.value.trim() || "gemini-1.5-flash";
+    CFG.GEMINI_MODEL = el.setModel.value.trim() || DEFAULT_MODEL;
     setMsg("Testando…", "");
     try {
       await callGemini(
