@@ -1,11 +1,8 @@
-/* Gemini TV Launcher — lógica da interface.
- * Roda dentro da WebView do Android (window.Android = ponte nativa) e também
- * no navegador do PC para testes (tecla "M" = microfone simulado por texto). */
 (function () {
   "use strict";
 
   const CFG = Object.assign(
-    { GEMINI_API_KEY: "", GEMINI_MODEL: "gemini-2.5-flash", USER_NAME: "", LOCALE: "pt-BR", MAX_HISTORY_TURNS: 8 },
+    { GEMINI_API_KEY: "", GEMINI_MODEL: "gemini-1.5-flash", USER_NAME: "", LOCALE: "pt-BR", MAX_HISTORY_TURNS: 8, VOICE: "" },
     window.CONFIG || {}
   );
   const NATIVE = typeof window.Android !== "undefined";
@@ -16,20 +13,17 @@
     orb: $("orb"), user: $("user-line"), ai: $("ai-line"), status: $("status"),
     mic: $("mic"), apps: $("apps"), gear: $("gear"),
     overlay: $("settings"), setKey: $("set-key"), setKeyToggle: $("set-key-toggle"),
-    setModel: $("set-model"), setName: $("set-name"), setMsg: $("set-msg"),
+    setModel: $("set-model"), setVoice: $("set-voice"), setName: $("set-name"), setMsg: $("set-msg"),
     setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"),
   };
-  const BASE_CFG = Object.assign({}, CFG);   // valores do config.js (fallback)
+  const BASE_CFG = Object.assign({}, CFG);
 
   let apps = [];
-  let history = [];            // [{role:"user"|"model", text}]
-  let state = "idle";          // idle | listening | thinking | speaking
-  let pendingLaunch = null;    // {package, timer}
+  let history = [];
+  let state = "idle";
+  let pendingLaunch = null;
   let busy = false;
 
-  // ------------------------------------------------------------------
-  // Estado visual
-  // ------------------------------------------------------------------
   function setState(s, statusText) {
     state = s;
     el.orb.dataset.state = s;
@@ -41,9 +35,6 @@
   function showAI(text) { el.ai.textContent = text; }
   function showUser(text) { el.user.textContent = text ? "“" + text + "”" : ""; }
 
-  // ------------------------------------------------------------------
-  // Relógio, data e rede
-  // ------------------------------------------------------------------
   function tickClock() {
     const now = new Date();
     el.clock.textContent = now.toLocaleTimeString(CFG.LOCALE, { hour: "2-digit", minute: "2-digit" });
@@ -62,9 +53,6 @@
     el.netLabel.textContent = labels[type] || labels.none;
   }
 
-  // ------------------------------------------------------------------
-  // Apps
-  // ------------------------------------------------------------------
   function loadApps() {
     if (NATIVE) {
       try { apps = JSON.parse(window.Android.getApps()); } catch (e) { apps = []; }
@@ -125,20 +113,43 @@
     if (pendingLaunch) { clearTimeout(pendingLaunch.timer); pendingLaunch = null; }
   }
 
-  // ------------------------------------------------------------------
-  // Voz (TTS)
-  // ------------------------------------------------------------------
+  // Carregar vozes na interface
+  function loadVoices() {
+    if (!("speechSynthesis" in window)) return;
+    const voices = speechSynthesis.getVoices();
+    el.setVoice.innerHTML = '<option value="">Padrão do sistema</option>';
+    voices.forEach((v) => {
+      if (v.lang.includes("pt") || v.lang.includes("BR")) {
+        const opt = document.createElement("option");
+        opt.value = v.name;
+        opt.textContent = `${v.name} (${v.lang})`;
+        if (v.name === CFG.VOICE) opt.selected = true;
+        el.setVoice.appendChild(opt);
+      }
+    });
+  }
+
+  if ("speechSynthesis" in window) {
+    speechSynthesis.onvoiceschanged = loadVoices;
+  }
+
   function speak(text) {
-    if (NATIVE) {
-      try { window.Android.speak(text); return; } catch (e) { /* cai para o fallback */ }
-    }
     if ("speechSynthesis" in window) {
       const u = new SpeechSynthesisUtterance(text);
       u.lang = CFG.LOCALE;
+      
+      const voices = speechSynthesis.getVoices();
+      if (CFG.VOICE) {
+        const selectedVoice = voices.find((v) => v.name === CFG.VOICE);
+        if (selectedVoice) u.voice = selectedVoice;
+      }
+
       u.onstart = () => window.onNativeEvent("tts_start", "");
       u.onend = () => window.onNativeEvent("tts_end", "");
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
+    } else if (NATIVE) {
+      try { window.Android.speak(text); return; } catch (e) {}
     } else {
       window.onNativeEvent("tts_end", "");
     }
@@ -149,9 +160,6 @@
     else if ("speechSynthesis" in window) speechSynthesis.cancel();
   }
 
-  // ------------------------------------------------------------------
-  // Gemini
-  // ------------------------------------------------------------------
   function systemPrompt() {
     const now = new Date();
     const appList = apps.slice(0, 150).map((a) => `- ${a.name} => ${a.package}`).join("\n") || "(nenhum)";
@@ -167,11 +175,9 @@
       "",
       "Regras:",
       '1. Conversa livre (perguntas, curiosidades, história, notícias, conselhos): action="none", package=null, resposta em "speech".',
-      '   Você não tem acesso a notícias em tempo real; se pedirem, diga isso com honestidade e ofereça o que souber.',
-      '2. Se o usuário pedir para abrir/ver/assistir algo que corresponda a um app da lista abaixo (ex.: "abra o YouTube", "quero ver a Netflix"):',
-      '   action="open_app" e package = EXATAMENTE o pacote da lista. Em "speech" confirme em poucas palavras (ex.: "Abrindo o YouTube.").',
-      "3. Se o app pedido NÃO estiver na lista, use action=\"none\" e avise que ele não está instalado.",
-      "4. Nunca invente pacotes que não estejam na lista.",
+      '2. Se o usuário pedir para abrir/ver/assistir algo que corresponda a um app da lista abaixo:',
+      '   action="open_app" e package = EXATAMENTE o pacote da lista.',
+      '3. Se o app pedido NÃO estiver na lista, use action="none" e avise que ele não está instalado.',
       "",
       "Apps instalados nesta TV:",
       appList,
@@ -182,8 +188,9 @@
     if (!CFG.GEMINI_API_KEY || CFG.GEMINI_API_KEY.indexOf("COLE_") === 0) {
       throw new Error("NO_KEY");
     }
+    const modelName = CFG.GEMINI_MODEL || "gemini-1.5-flash";
     const url = "https://generativelanguage.googleapis.com/v1beta/models/" +
-      encodeURIComponent(CFG.GEMINI_MODEL) + ":generateContent";
+      encodeURIComponent(modelName) + ":generateContent";
     const body = {
       systemInstruction: { parts: [{ text: system }] },
       contents,
@@ -229,13 +236,12 @@
         package: typeof o.package === "string" ? o.package : null,
       };
     } catch (e) {
-      // O modelo não devolveu JSON: usa o texto como fala.
       return { speech: t, action: "none", package: null };
     }
   }
 
   function friendlyError(e) {
-    if (e && e.message === "NO_KEY") return "Falta a chave do Gemini. Configure na engrenagem, no canto superior direito.";
+    if (e && e.message === "NO_KEY") return "Falta a chave do Gemini. Configure na engrenagem.";
     if (e && e.name === "AbortError") return "O Gemini demorou demais para responder. Tente de novo.";
     if (e && (e.status === 400 || e.status === 403)) return "A chave do Gemini foi recusada. Verifique nas Configurações.";
     if (e && e.status === 404) return "Modelo não encontrado. Verifique o nome do modelo nas Configurações.";
@@ -244,9 +250,6 @@
     return "Não consegui falar com o Gemini agora.";
   }
 
-  // ------------------------------------------------------------------
-  // Fluxos: saudação e conversa
-  // ------------------------------------------------------------------
   function localGreeting() {
     const h = new Date().getHours();
     const p = h < 5 ? "Boa madrugada" : h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
@@ -263,14 +266,12 @@
       const raw = await callGemini(
         [{ role: "user", parts: [{ text:
           `Gere um cumprimento curto e caloroso para ${CFG.USER_NAME || "o usuário"}, ` +
-          `que acabou de ligar a TV de ${periodo} (são ${new Date().toLocaleTimeString(CFG.LOCALE, { hour: "2-digit", minute: "2-digit" })}). ` +
-          `Termine perguntando o que vão fazer hoje. Máximo 15 palavras.` }] }],
+          `que acabou de ligar a TV de ${periodo}. Termine perguntando o que vão fazer hoje. Máximo 15 palavras.` }] }],
         systemPrompt(), 1.0
       );
       const parsed = parseModelJson(raw);
       if (parsed.speech) text = parsed.speech;
     } catch (e) {
-      // Sem chave/sem rede: usa a saudação local, e avisa na tela se for configuração.
       if (e && e.message === "NO_KEY") el.status.textContent = friendlyError(e);
     }
     say(text);
@@ -298,13 +299,12 @@
         systemPrompt(), 0.6
       );
       const r = parseModelJson(raw);
-      const speech = r.speech || (r.action === "open_app" ? "Abrindo." : "Hmm, não entendi. Pode repetir?");
+      const speech = r.speech || (r.action === "open_app" ? "Abrindo." : "Não entendi. Pode repetir?");
       history.push({ role: "model", text: speech });
 
       if (r.action === "open_app" && r.package) {
         const known = apps.find((a) => a.package === r.package);
         if (known || !NATIVE) {
-          // Fala a confirmação e abre o app quando a fala terminar (com limite de tempo).
           cancelPendingLaunch();
           pendingLaunch = { package: r.package, timer: setTimeout(() => {
             const p = pendingLaunch; pendingLaunch = null;
@@ -318,7 +318,7 @@
         say(speech);
       }
     } catch (e) {
-      history.pop(); // não guarda a pergunta que falhou
+      history.pop();
       const msg = friendlyError(e);
       showAI(msg);
       setState("idle", IDLE_HINT);
@@ -328,9 +328,6 @@
     }
   }
 
-  // ------------------------------------------------------------------
-  // Microfone
-  // ------------------------------------------------------------------
   function toggleMic() {
     if (state === "listening") {
       if (NATIVE) window.Android.stopListening();
@@ -343,15 +340,11 @@
     if (NATIVE) {
       window.Android.startListening();
     } else {
-      // Teste no PC: digita a frase.
       const t = window.prompt("Fale (simulado) — digite o comando:");
       if (t && t.trim()) ask(t.trim());
     }
   }
 
-  // ------------------------------------------------------------------
-  // Configurações (chave, modelo, nome) — salvas no armazenamento privado do app
-  // ------------------------------------------------------------------
   let settingsOpen = false;
 
   function storeGet(k) {
@@ -370,8 +363,9 @@
 
   function loadSettings() {
     CFG.GEMINI_API_KEY = storeGet("api_key") || BASE_CFG.GEMINI_API_KEY;
-    CFG.GEMINI_MODEL = storeGet("model") || BASE_CFG.GEMINI_MODEL;
+    CFG.GEMINI_MODEL = storeGet("model") || "gemini-1.5-flash";
     CFG.USER_NAME = storeGet("user_name") || BASE_CFG.USER_NAME;
+    CFG.VOICE = storeGet("voice") || "";
   }
 
   function hasKey() {
@@ -392,8 +386,9 @@
     el.setKey.value = hasKey() ? CFG.GEMINI_API_KEY : "";
     el.setKey.type = "password";
     el.setKeyToggle.textContent = "Mostrar chave";
-    el.setModel.value = CFG.GEMINI_MODEL || "";
+    el.setModel.value = CFG.GEMINI_MODEL || "gemini-1.5-flash";
     el.setName.value = CFG.USER_NAME || "";
+    loadVoices();
     setMsg(firstRun ? "Digite ou cole sua chave do Gemini para começar." : "", "");
     el.overlay.hidden = false;
     el.setKey.focus();
@@ -403,15 +398,16 @@
     settingsOpen = false;
     el.overlay.hidden = true;
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    loadSettings();            // descarta valores de teste não salvos
+    loadSettings();
     el.gear.focus();
   }
 
   function saveSettings() {
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
     const ok = storeSet("api_key", key) &&
-      storeSet("model", el.setModel.value.trim()) &&
-      storeSet("user_name", el.setName.value.trim());
+      storeSet("model", el.setModel.value.trim() || "gemini-1.5-flash") &&
+      storeSet("user_name", el.setName.value.trim()) &&
+      storeSet("voice", el.setVoice.value);
     if (!ok) { setMsg("Não consegui salvar. Tente de novo.", "err"); return; }
     closeSettings();
     if (hasKey()) greet();
@@ -422,7 +418,7 @@
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
     if (!key) { setMsg("Digite a chave primeiro.", "err"); return; }
     CFG.GEMINI_API_KEY = key;
-    CFG.GEMINI_MODEL = el.setModel.value.trim() || BASE_CFG.GEMINI_MODEL;
+    CFG.GEMINI_MODEL = el.setModel.value.trim() || "gemini-1.5-flash";
     setMsg("Testando…", "");
     try {
       await callGemini(
@@ -441,15 +437,14 @@
     el.setKeyToggle.textContent = show ? "Ocultar chave" : "Mostrar chave";
   }
 
-  // D-Pad dentro da tela de configurações (grade de linhas)
   function settingsKey(ev) {
-    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setName],
+    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setVoice], [el.setName],
                   [el.setSave, el.setTest, el.setCancel]];
     const active = document.activeElement;
     let r = rows.findIndex((row) => row.indexOf(active) !== -1);
     if (r === -1) { el.setKey.focus(); return; }
     const c = rows[r].indexOf(active);
-    const isInput = active.tagName === "INPUT";
+    const isInput = active.tagName === "INPUT" || active.tagName === "SELECT";
 
     if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
       const nr = r + (ev.key === "ArrowDown" ? 1 : -1);
@@ -460,7 +455,6 @@
       if (nc >= 0 && nc < rows[r].length) rows[r][nc].focus();
       ev.preventDefault();
     }
-    // Enter/OK: comportamento padrão (abre o teclado no campo, aciona o botão).
   }
 
   function bindSettings() {
@@ -476,12 +470,9 @@
     timeout: "Não ouvi nada. Pressione o microfone e fale.",
     network: "O reconhecimento de voz precisa de internet.",
     permission: "Preciso de permissão para usar o microfone.",
-    unavailable: "Reconhecimento de voz indisponível nesta TV (instale/atualize o app Google).",
+    unavailable: "Reconhecimento de voz indisponível nesta TV.",
   };
 
-  // ------------------------------------------------------------------
-  // Eventos vindos do Android
-  // ------------------------------------------------------------------
   window.onNativeEvent = function (type, payload) {
     switch (type) {
       case "mic_key": if (!settingsOpen) toggleMic(); break;
@@ -511,15 +502,12 @@
         el.mic.focus();
         break;
       case "resume":
-        loadApps();       // apps podem ter sido instalados/removidos
+        loadApps();
         updateNetwork();
         break;
     }
   };
 
-  // ------------------------------------------------------------------
-  // Navegação D-Pad
-  // ------------------------------------------------------------------
   function tiles() { return Array.from(el.apps.querySelectorAll(".app-tile")); }
 
   document.addEventListener("keydown", (ev) => {
@@ -564,13 +552,8 @@
   });
 
   el.mic.addEventListener("click", toggleMic);
-
-  // Garante que sempre exista algo com foco (a WebView perde foco ao voltar de outro app).
   window.addEventListener("focus", () => { if (!document.activeElement || document.activeElement === document.body) el.mic.focus(); });
 
-  // ------------------------------------------------------------------
-  // Inicialização
-  // ------------------------------------------------------------------
   function init() {
     loadSettings();
     bindSettings();
@@ -585,7 +568,7 @@
     el.mic.focus();
     setState("idle", IDLE_HINT);
     greet();
-    if (!hasKey()) openSettings(true);   // primeira execução: pede a chave
+    if (!hasKey()) openSettings(true);
   }
 
   document.addEventListener("DOMContentLoaded", init);

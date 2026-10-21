@@ -17,17 +17,17 @@
       <div id="date" class="date">&nbsp;</div>
     </div>
     <div class="top-right">
-    <button id="gear" class="gear-btn focusable" tabindex="0" aria-label="Configurações">
-      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
-        <path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5a.5.5 0 0 0 .6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6a.5.5 0 0 0 .5.4h4a.5.5 0 0 0 .5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1a.5.5 0 0 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
-      </svg>
-    </button>
-    <div id="net" class="net" data-state="none">
-      <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
-        <path d="M12 18.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM2.4 8.6a14 14 0 0 1 19.2 0l-1.7 1.8a11.5 11.5 0 0 0-15.8 0zm3.5 3.7a9 9 0 0 1 12.2 0l-1.7 1.8a6.5 6.5 0 0 0-8.8 0z"/>
-      </svg>
-      <span id="net-label">Sem rede</span>
-    </div>
+      <button id="gear" class="gear-btn focusable" tabindex="0" aria-label="Configurações">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+          <path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6a.5.5 0 0 0 .1-.6l-2-3.5a.5.5 0 0 0-.6-.2l-2.5 1a7.3 7.3 0 0 0-1.7-1l-.4-2.6a.5.5 0 0 0-.5-.4h-4a.5.5 0 0 0-.5.4l-.4 2.6a7.3 7.3 0 0 0-1.7 1l-2.5-1a.5.5 0 0 0-.6.2l-2 3.5a.5.5 0 0 0 .1.6L4.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6a.5.5 0 0 0-.1.6l2 3.5a.5.5 0 0 0 .6.2l2.5-1c.5.4 1.1.7 1.7 1l.4 2.6a.5.5 0 0 0 .5.4h4a.5.5 0 0 0 .5-.4l.4-2.6c.6-.3 1.2-.6 1.7-1l2.5 1a.5.5 0 0 0 .6-.2l2-3.5a.5.5 0 0 0-.1-.6zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+        </svg>
+      </button>
+      <div id="net" class="net" data-state="none">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true">
+          <path d="M12 18.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM2.4 8.6a14 14 0 0 1 19.2 0l-1.7 1.8a11.5 11.5 0 0 0-15.8 0zm3.5 3.7a9 9 0 0 1 12.2 0l-1.7 1.8a6.5 6.5 0 0 0-8.8 0z"/>
+        </svg>
+        <span id="net-label">Sem rede</span>
+      </div>
     </div>
   </header>
 
@@ -65,13 +65,14 @@
       <h2>Configurações</h2>
 
       <label class="field-label" for="set-key">Chave de API do Gemini</label>
-      <input id="set-key" class="field" type="password" autocomplete="off" autocapitalize="off"
-             spellcheck="false" placeholder="AIza…">
+      <input id="set-key" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza…">
       <button id="set-key-toggle" class="btn small" type="button">Mostrar chave</button>
 
       <label class="field-label" for="set-model">Modelo</label>
-      <input id="set-model" class="field" type="text" autocomplete="off" autocapitalize="off"
-             spellcheck="false" placeholder="gemini-2.5-flash">
+      <input id="set-model" class="field" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gemini-1.5-flash">
+
+      <label class="field-label" for="set-voice">Voz do Assistente</label>
+      <select id="set-voice" class="field"></select>
 
       <label class="field-label" for="set-name">Seu nome (para a saudação)</label>
       <input id="set-name" class="field" type="text" autocomplete="off" placeholder="Weverton">
