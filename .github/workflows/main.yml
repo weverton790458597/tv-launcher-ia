@@ -1,0 +1,37 @@
+name: Compilar APK Android Launcher
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Baixar Código Fonte
+      uses: actions/checkout@v3
+
+    - name: Configurar Java JDK 17
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Configurar Gradle
+      uses: gradle/gradle-build-action@v2
+
+    - name: Dar permissão de execução ao Gradle
+      run: chmod +x android/gradlew || true
+
+    - name: Compilar APK Debug
+      run: |
+        cd android
+        ./gradlew assembleDebug
+
+    - name: Disponibilizar APK para Download
+      uses: actions/upload-artifact@v3
+      with:
+        name: TV-Launcher-Gemini-APK
+        path: android/app/build/outputs/apk/debug/app-debug.apk
