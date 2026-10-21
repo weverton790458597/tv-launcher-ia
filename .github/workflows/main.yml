@@ -31,7 +31,7 @@ jobs:
         ./gradlew assembleDebug
 
     - name: Disponibilizar APK para Download
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: TV-Launcher-Gemini-APK
         path: android/app/build/outputs/apk/debug/app-debug.apk
