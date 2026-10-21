@@ -14,8 +14,12 @@
   const el = {
     clock: $("clock"), date: $("date"), net: $("net"), netLabel: $("net-label"),
     orb: $("orb"), user: $("user-line"), ai: $("ai-line"), status: $("status"),
-    mic: $("mic"), apps: $("apps"),
+    mic: $("mic"), apps: $("apps"), gear: $("gear"),
+    overlay: $("settings"), setKey: $("set-key"), setKeyToggle: $("set-key-toggle"),
+    setModel: $("set-model"), setName: $("set-name"), setMsg: $("set-msg"),
+    setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"),
   };
+  const BASE_CFG = Object.assign({}, CFG);   // valores do config.js (fallback)
 
   let apps = [];
   let history = [];            // [{role:"user"|"model", text}]
@@ -231,9 +235,10 @@
   }
 
   function friendlyError(e) {
-    if (e && e.message === "NO_KEY") return "Falta configurar a chave do Gemini no arquivo config.js.";
+    if (e && e.message === "NO_KEY") return "Falta a chave do Gemini. Configure na engrenagem, no canto superior direito.";
     if (e && e.name === "AbortError") return "O Gemini demorou demais para responder. Tente de novo.";
-    if (e && (e.status === 400 || e.status === 403)) return "A chave do Gemini foi recusada. Verifique o config.js.";
+    if (e && (e.status === 400 || e.status === 403)) return "A chave do Gemini foi recusada. Verifique nas Configurações.";
+    if (e && e.status === 404) return "Modelo não encontrado. Verifique o nome do modelo nas Configurações.";
     if (e && e.status === 429) return "Muitos pedidos ao Gemini agora. Tente de novo em instantes.";
     if (!navigator.onLine) return "A TV está sem internet.";
     return "Não consegui falar com o Gemini agora.";
@@ -344,6 +349,128 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  // Configurações (chave, modelo, nome) — salvas no armazenamento privado do app
+  // ------------------------------------------------------------------
+  let settingsOpen = false;
+
+  function storeGet(k) {
+    try {
+      if (NATIVE) return window.Android.getSetting(k) || "";
+      return localStorage.getItem("gl_" + k) || "";
+    } catch (e) { return ""; }
+  }
+  function storeSet(k, v) {
+    try {
+      if (NATIVE) window.Android.setSetting(k, v);
+      else localStorage.setItem("gl_" + k, v);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  function loadSettings() {
+    CFG.GEMINI_API_KEY = storeGet("api_key") || BASE_CFG.GEMINI_API_KEY;
+    CFG.GEMINI_MODEL = storeGet("model") || BASE_CFG.GEMINI_MODEL;
+    CFG.USER_NAME = storeGet("user_name") || BASE_CFG.USER_NAME;
+  }
+
+  function hasKey() {
+    const k = CFG.GEMINI_API_KEY;
+    return !!k && k.indexOf("COLE_") !== 0;
+  }
+
+  function setMsg(text, kind) {
+    el.setMsg.textContent = text;
+    el.setMsg.className = "set-msg" + (kind ? " " + kind : "");
+  }
+
+  function openSettings(firstRun) {
+    settingsOpen = true;
+    cancelPendingLaunch();
+    stopSpeaking();
+    if (state === "listening" && NATIVE) { try { window.Android.stopListening(); } catch (e) {} }
+    el.setKey.value = hasKey() ? CFG.GEMINI_API_KEY : "";
+    el.setKey.type = "password";
+    el.setKeyToggle.textContent = "Mostrar chave";
+    el.setModel.value = CFG.GEMINI_MODEL || "";
+    el.setName.value = CFG.USER_NAME || "";
+    setMsg(firstRun ? "Digite ou cole sua chave do Gemini para começar." : "", "");
+    el.overlay.hidden = false;
+    el.setKey.focus();
+  }
+
+  function closeSettings() {
+    settingsOpen = false;
+    el.overlay.hidden = true;
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    loadSettings();            // descarta valores de teste não salvos
+    el.gear.focus();
+  }
+
+  function saveSettings() {
+    const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
+    const ok = storeSet("api_key", key) &&
+      storeSet("model", el.setModel.value.trim()) &&
+      storeSet("user_name", el.setName.value.trim());
+    if (!ok) { setMsg("Não consegui salvar. Tente de novo.", "err"); return; }
+    closeSettings();
+    if (hasKey()) greet();
+    else { showAI("Chave removida. Configure uma nova para conversar."); setState("idle", IDLE_HINT); }
+  }
+
+  async function testSettings() {
+    const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
+    if (!key) { setMsg("Digite a chave primeiro.", "err"); return; }
+    CFG.GEMINI_API_KEY = key;
+    CFG.GEMINI_MODEL = el.setModel.value.trim() || BASE_CFG.GEMINI_MODEL;
+    setMsg("Testando…", "");
+    try {
+      await callGemini(
+        [{ role: "user", parts: [{ text: "Responda apenas com o JSON: {\"speech\":\"ok\"}" }] }],
+        "Responda sempre com JSON válido.", 0
+      );
+      setMsg("Chave válida ✓ — lembre de tocar em Salvar.", "ok");
+    } catch (e) {
+      setMsg(friendlyError(e), "err");
+    }
+  }
+
+  function toggleKeyVisibility() {
+    const show = el.setKey.type === "password";
+    el.setKey.type = show ? "text" : "password";
+    el.setKeyToggle.textContent = show ? "Ocultar chave" : "Mostrar chave";
+  }
+
+  // D-Pad dentro da tela de configurações (grade de linhas)
+  function settingsKey(ev) {
+    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setName],
+                  [el.setSave, el.setTest, el.setCancel]];
+    const active = document.activeElement;
+    let r = rows.findIndex((row) => row.indexOf(active) !== -1);
+    if (r === -1) { el.setKey.focus(); return; }
+    const c = rows[r].indexOf(active);
+    const isInput = active.tagName === "INPUT";
+
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      const nr = r + (ev.key === "ArrowDown" ? 1 : -1);
+      if (nr >= 0 && nr < rows.length) rows[nr][Math.min(c, rows[nr].length - 1)].focus();
+      ev.preventDefault();
+    } else if ((ev.key === "ArrowLeft" || ev.key === "ArrowRight") && !isInput) {
+      const nc = c + (ev.key === "ArrowRight" ? 1 : -1);
+      if (nc >= 0 && nc < rows[r].length) rows[r][nc].focus();
+      ev.preventDefault();
+    }
+    // Enter/OK: comportamento padrão (abre o teclado no campo, aciona o botão).
+  }
+
+  function bindSettings() {
+    el.gear.addEventListener("click", () => openSettings(false));
+    el.setSave.addEventListener("click", saveSettings);
+    el.setTest.addEventListener("click", testSettings);
+    el.setCancel.addEventListener("click", closeSettings);
+    el.setKeyToggle.addEventListener("click", toggleKeyVisibility);
+  }
+
   const STT_ERRORS = {
     no_match: "Não entendi. Tente de novo.",
     timeout: "Não ouvi nada. Pressione o microfone e fale.",
@@ -357,7 +484,7 @@
   // ------------------------------------------------------------------
   window.onNativeEvent = function (type, payload) {
     switch (type) {
-      case "mic_key": toggleMic(); break;
+      case "mic_key": if (!settingsOpen) toggleMic(); break;
       case "stt_start": setState("listening", "Ouvindo…"); showAI("Pode falar…"); break;
       case "stt_partial": showUser(payload); break;
       case "stt_result": ask(payload); break;
@@ -375,6 +502,7 @@
         break;
       case "home":
       case "back":
+        if (settingsOpen) { closeSettings(); break; }
         cancelPendingLaunch();
         stopSpeaking();
         showUser("");
@@ -400,6 +528,12 @@
     const inApps = active && active.classList && active.classList.contains("app-tile");
     const list = tiles();
 
+    if (settingsOpen) {
+      if (key === "Escape") { closeSettings(); ev.preventDefault(); return; }
+      settingsKey(ev);
+      return;
+    }
+
     if (key === "m" || key === "M") { toggleMic(); ev.preventDefault(); return; }
 
     if (key === "ArrowLeft" || key === "ArrowRight") {
@@ -409,15 +543,19 @@
       }
       ev.preventDefault();
     } else if (key === "ArrowDown") {
-      if (!inApps && list.length) { list[0].focus(); }
+      if (active === el.gear) el.mic.focus();
+      else if (!inApps && list.length) { list[0].focus(); }
       ev.preventDefault();
     } else if (key === "ArrowUp") {
       if (inApps) el.mic.focus();
+      else if (active === el.mic) el.gear.focus();
       ev.preventDefault();
     } else if (key === "Enter" || key === " " || ev.keyCode === 23) {
       if (inApps) {
         const a = apps[Number(active.dataset.index)];
         if (a) launchApp(a.package);
+      } else if (active === el.gear) {
+        openSettings(false);
       } else {
         toggleMic();
       }
@@ -434,6 +572,8 @@
   // Inicialização
   // ------------------------------------------------------------------
   function init() {
+    loadSettings();
+    bindSettings();
     tickClock();
     setInterval(tickClock, 1000);
     updateNetwork();
@@ -445,6 +585,7 @@
     el.mic.focus();
     setState("idle", IDLE_HINT);
     greet();
+    if (!hasKey()) openSettings(true);   // primeira execução: pede a chave
   }
 
   document.addEventListener("DOMContentLoaded", init);

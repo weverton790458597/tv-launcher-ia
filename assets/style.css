@@ -236,3 +236,68 @@ header, main, section { position: relative; z-index: 1; }
   box-shadow: 0 0 0 3px var(--cyan), 0 0 36px rgba(0, 229, 255, 0.5);
 }
 .app-tile:focus .label { color: var(--text); }
+
+/* ---------- Engrenagem ---------- */
+.top-right { display: flex; align-items: center; gap: 1.2vw; }
+.gear-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 6vh; height: 6vh; border-radius: 50%;
+  background: var(--panel); border: 1px solid var(--panel-border);
+  color: var(--muted); outline: none;
+  transition: transform 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.gear-btn svg { fill: currentColor; }
+.gear-btn:focus {
+  color: var(--text); border-color: var(--cyan);
+  box-shadow: 0 0 0 3px var(--cyan), 0 0 30px rgba(0, 229, 255, 0.5);
+}
+
+/* ---------- Tela de configurações ---------- */
+.overlay {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(4, 6, 14, 0.88);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+}
+.overlay[hidden] { display: none; }
+.settings-panel {
+  width: min(62vw, 1100px);
+  max-height: 94vh;
+  padding: 3vh 3vw;
+  display: flex; flex-direction: column; gap: 1vh;
+  background: rgba(14, 18, 36, 0.92);
+  border: 1px solid var(--panel-border);
+  border-radius: 28px;
+}
+.settings-panel h2 { font-size: 3.6vh; font-weight: 300; margin-bottom: 1vh; }
+.field-label { font-size: 2vh; color: var(--muted); margin-top: 1vh; }
+.field {
+  width: 100%; padding: 1.4vh 1.4vw;
+  font-size: 2.8vh; font-family: inherit; color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--panel-border); border-radius: 14px;
+  outline: none;
+  transition: box-shadow 0.15s, border-color 0.15s;
+}
+.field:focus {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px var(--cyan), 0 0 28px rgba(0, 229, 255, 0.4);
+}
+.btn-row { display: flex; gap: 1.2vw; margin-top: 2vh; }
+.btn {
+  padding: 1.4vh 2.4vw; font-size: 2.6vh; font-family: inherit; color: var(--text);
+  background: var(--panel); border: 1px solid var(--panel-border);
+  border-radius: 999px; outline: none;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.btn.small { align-self: flex-start; font-size: 2vh; padding: 0.8vh 1.6vw; }
+.btn.primary { background: rgba(0, 229, 255, 0.18); border-color: rgba(0, 229, 255, 0.5); }
+.btn:focus {
+  transform: scale(1.06);
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 3px var(--cyan), 0 0 28px rgba(0, 229, 255, 0.5);
+}
+.set-msg { min-height: 3.2vh; font-size: 2.2vh; margin-top: 1vh; color: var(--muted); }
+.set-msg.ok { color: var(--green); }
+.set-msg.err { color: var(--pink); }
+.hint { margin-top: 1.2vh; font-size: 1.8vh; color: var(--muted); }

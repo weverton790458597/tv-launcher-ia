@@ -47,6 +47,9 @@ class MainActivity : Activity() {
     private var listening = false
     private var startListeningAfterPermission = false
 
+    // Configurações do usuário (chave do Gemini, modelo, nome). Armazenamento privado do app.
+    private val prefs by lazy { getSharedPreferences("launcher_settings", Context.MODE_PRIVATE) }
+
     companion object {
         private const val REQ_AUDIO = 101
         private const val LOCALE_TAG = "pt-BR"
@@ -369,5 +372,9 @@ class MainActivity : Activity() {
         @JavascriptInterface fun startListening() { runOnUiThread { startListeningInternal() } }
         @JavascriptInterface fun stopListening() { runOnUiThread { stopListeningInternal() } }
         @JavascriptInterface fun isListening(): Boolean = listening
+        @JavascriptInterface fun getSetting(key: String): String = prefs.getString(key, "") ?: ""
+        @JavascriptInterface fun setSetting(key: String, value: String) {
+            prefs.edit().putString(key, value).apply()
+        }
     }
 }
