@@ -180,7 +180,7 @@
   }
 
   // Fila de fala: cada frase é sintetizada em paralelo e tocada em ordem.
-  const sp = { token: 0, q: [], playing: false, started: false, finished: false, ended: false, release: null, nativeRes: null, src: null, audio: null, fresh: false };
+  const sp = { token: 0, q: [], playing: false, started: false, finished: false, ended: false, release: null, nativeRes: null, src: null, audio: null, fresh: false, chain: Promise.resolve() };
   let actx = null;
 
   function unlockAudio() {
@@ -191,6 +191,35 @@
   }
   const GL = "https://generativelanguage.googleapis.com/v1beta/models/";
 
+  function httpErr(r) { const e = new Error("HTTP_" + r.status); e.status = r.status; return e; }
+
+  // PCM 16-bit/24 kHz do Gemini -> WAV tocado por <audio> (não depende do AudioContext, que ficava suspenso sem toque)
+  function pcmToWavUrl(b64) {
+    const bin = atob(b64), n = bin.length, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + n, true); w(8, "WAVEfmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 24000, true); v.setUint32(28, 48000, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, n, true);
+    const u8 = new Uint8Array(buf, 44);
+    for (let i = 0; i < n; i++) u8[i] = bin.charCodeAt(i);
+    return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  }
+
+  // Tenta de novo (limite de pedidos/erro de servidor) em vez de trocar de voz na primeira falha
+  async function withRetry(fn) {
+    let err;
+    for (let i = 0; i < 3; i++) {
+      try {
+        return await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error("TIMEOUT")), 15000))]);
+      } catch (e) {
+        err = e;
+        if (e && e.status && [429, 500, 502, 503, 504].indexOf(e.status) === -1) break;
+        await new Promise((ok) => setTimeout(ok, 700 * (i + 1)));
+      }
+    }
+    throw err;
+  }
+
   async function synthGemini(text) {
     const r = await fetch(GL + encodeURIComponent(TTS_MODEL) + ":generateContent", {
       method: "POST",
@@ -200,31 +229,17 @@
         generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: CFG.VOICES.gemini || "Kore" } } } },
       }),
     });
-    if (!r.ok) throw new Error("HTTP_" + r.status);
+    if (!r.ok) throw httpErr(r);
     const d = await r.json();
-    const part = d.candidates[0].content.parts.find((p) => p.inlineData);
-    return part.inlineData.data;   // PCM 16-bit, 24 kHz, mono (base64)
+    return pcmToWavUrl(d.candidates[0].content.parts.find((p) => p.inlineData).inlineData.data);
   }
   async function synthEdge(text) {
     const url = CFG.SERVER.replace(/\/+$/, "") + "/tts?voz=" + encodeURIComponent(CFG.VOICES.edge || "pt-BR-FranciscaNeural") + "&texto=" + encodeURIComponent(text);
     const r = await fetch(url);
-    if (!r.ok) throw new Error("HTTP_" + r.status);
+    if (!r.ok) throw httpErr(r);
     return URL.createObjectURL(await r.blob());
   }
 
-  function playPcm(b64) {
-    return new Promise((res) => {
-      unlockAudio();
-      const bin = atob(b64), n = bin.length >> 1;
-      const buf = actx.createBuffer(1, n, 24000), ch = buf.getChannelData(0);
-      for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v & 0x8000) v -= 0x10000; ch[i] = v / 32768; }
-      const src = actx.createBufferSource();
-      src.buffer = buf; src.connect(actx.destination);
-      src.onended = () => res();
-      sp.src = src; sp.release = res;
-      src.start();
-    });
-  }
   function playUrl(url) {
     return new Promise((res) => {
       const a = new Audio(url);
@@ -256,10 +271,11 @@
       try {
         const data = await item.p;
         if (t !== sp.token) return;
-        if (data) { await (CFG.ENGINE === "gemini" ? playPcm(data) : playUrl(data)); return; }
+        if (data) { await playUrl(data); return; }
       } catch (e) {}
       if (t !== sp.token) return;
     }
+    if (item.p) el.status.textContent = "Voz escolhida indisponível — usando a voz do sistema";
     await playSystem(item.text);   // reserva: se o motor escolhido falhar, usa a voz do sistema
   }
 
@@ -279,7 +295,7 @@
   }
 
   function speechStop() {
-    sp.token++; sp.q = []; sp.playing = false; sp.fresh = true;
+    sp.token++; sp.q = []; sp.playing = false; sp.fresh = true; sp.chain = Promise.resolve();
     try { if (sp.src) sp.src.stop(); } catch (e) {}
     try { if (sp.audio) sp.audio.pause(); } catch (e) {}
     sp.src = sp.audio = null;
@@ -291,9 +307,12 @@
   function speechBegin() { speechStop(); sp.started = sp.finished = sp.ended = false; }
   function enqueue(text) {
     const item = { text, p: null };
-    if (CFG.ENGINE === "gemini" && actx) item.p = synthGemini(text);
-    else if (CFG.ENGINE === "edge" && CFG.SERVER) item.p = synthEdge(text);
-    if (item.p) item.p.catch(() => {});
+    const synth = CFG.ENGINE === "gemini" && hasKey() ? synthGemini : (CFG.ENGINE === "edge" && CFG.SERVER ? synthEdge : null);
+    if (synth) {   // pedidos em fila (um por vez) para não estourar o limite do serviço
+      const p = sp.chain.then(() => withRetry(() => synth(text)));
+      sp.chain = p.catch(() => {}); p.catch(() => {});
+      item.p = p;
+    }
     sp.q.push(item);
     pump();
   }
@@ -310,7 +329,7 @@
   function speechDone() {
     if (state !== "listening") setState("idle", IDLE_HINT);
     if (pendingLaunch) { const p = pendingLaunch; cancelPendingLaunch(); convo = false; setState(state); launchApp(p.package); return; }
-    if (convo && NATIVE && !settingsOpen) setTimeout(() => { if (convo && state === "idle" && !busy) startListen(); }, 300);
+    if (convo && NATIVE && !settingsOpen) setTimeout(() => { if (convo && state === "idle" && !busy) startListen(); }, 500);
   }
 
   function systemPrompt() {
@@ -531,15 +550,20 @@
     unlockAudio();
     speechBegin();
     const tok = sp.token;
-    let spoken = 0;
+    let spoken = 0, buf = "", first = true;
+    const minLen = CFG.ENGINE === "system" ? 0 : 90;
+    const emit = (t, force) => {
+      if (t) buf += (buf ? " " : "") + t;
+      if (buf && (force || first || buf.length >= minLen)) { enqueue(buf); buf = ""; first = false; }
+    };
     // Fala frase a frase enquanto o texto ainda está chegando
     const flush = (clean, final) => {
       for (;;) {
         const m = clean.slice(spoken).match(final ? /^\s*([\s\S]*?[.!?…]+["”')\]]*)(?=\s|$)/ : /^\s*([\s\S]*?[.!?…]+["”')\]]*)(?=\s)/);
         if (!m) break;
-        enqueue(m[1].trim()); spoken += m[0].length;
+        emit(m[1].trim()); spoken += m[0].length;
       }
-      if (final) { const r = clean.slice(spoken).trim(); if (r) enqueue(r); spoken = clean.length; }
+      if (final) { emit(clean.slice(spoken).trim(), true); spoken = clean.length; }
     };
 
     try {
@@ -572,11 +596,24 @@
     }
   }
 
+  let listenTimer = null, failTurns = 0;
+  function beginNativeListen(attempt) {
+    clearTimeout(listenTimer);
+    try { if (attempt > 0) window.Android.stopListening(); } catch (e) {}
+    try { window.Android.startListening(); } catch (e) {}
+    // Se o microfone não abrir sozinho, tenta de novo; depois pede o botão do controle
+    listenTimer = setTimeout(() => {
+      if (state === "listening") return;
+      if (attempt < 2) beginNativeListen(attempt + 1);
+      else { setState("idle", IDLE_HINT); showAI("Aperte o microfone do controle para continuar a conversa."); }
+    }, 2000);
+  }
+
   function startListen() {
     cancelPendingLaunch();
     speechStop();
     showUser("");
-    if (NATIVE) { window.Android.startListening(); return; }
+    if (NATIVE) { beginNativeListen(0); return; }
     convo = false; setState(state);
     const t = window.prompt("Fale (simulado) — digite o comando:");
     if (t && t.trim()) ask(t.trim());
@@ -598,7 +635,10 @@
       setState("idle", IDLE_HINT);
       return;
     }
-    if (convo) { endConvo(); return; }
+    if (convo) {
+      if (state === "idle" && !busy) { startListen(); return; }   // conversa aguardando: o botão do controle volta a ouvir
+      endConvo(); return;
+    }
     if (busy) return;
     convo = true; silentTurns = 0;
     setState(state);
@@ -613,7 +653,18 @@
   }
 
   function sttError(p) {
+    clearTimeout(listenTimer);
     const quiet = p === "no_match" || p === "timeout";
+    if (convo && !quiet && ++failTurns < 2) {
+      setTimeout(() => { if (convo && state !== "listening" && !busy) beginNativeListen(1); }, 800);
+      return;
+    }
+    if (convo && !quiet) {
+      failTurns = 0;
+      setState("idle", IDLE_HINT);
+      showAI((STT_ERRORS[p] || "Erro no reconhecimento de voz (" + p + ")") + " Aperte o microfone do controle para continuar.");
+      return;
+    }
     if (convo && quiet && ++silentTurns < 2) {
       setTimeout(() => { if (convo && state !== "listening" && !busy) startListen(); }, 300);
       return;
@@ -621,7 +672,7 @@
     const wasConvo = convo;
     convo = false;
     setState("idle", IDLE_HINT);
-    showAI(wasConvo && quiet ? "Conversa encerrada por inatividade." : (STT_ERRORS[p] || "Erro no reconhecimento de voz."));
+    showAI(wasConvo && quiet ? "Conversa encerrada por inatividade." : (STT_ERRORS[p] || "Erro no reconhecimento de voz (" + p + ")"));
   }
 
   let settingsOpen = false;
@@ -790,9 +841,9 @@
   window.onNativeEvent = function (type, payload) {
     switch (type) {
       case "mic_key": if (!settingsOpen) toggleMic(); break;
-      case "stt_start": setState("listening", convo ? "Ouvindo… (conversa contínua)" : "Ouvindo…"); showAI("Pode falar…"); break;
+      case "stt_start": clearTimeout(listenTimer); setState("listening", convo ? "Ouvindo… (conversa contínua)" : "Ouvindo…"); showAI("Pode falar…"); break;
       case "stt_partial": showUser(payload); break;
-      case "stt_result": silentTurns = 0; handleUtterance(payload); break;
+      case "stt_result": silentTurns = failTurns = 0; handleUtterance(payload); break;
       case "stt_error": sttError(payload); break;
       case "tts_end": if (sp.nativeRes) { const r = sp.nativeRes; sp.nativeRes = null; r(); } break;   // fim do Android.speak
       case "home":
