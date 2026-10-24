@@ -17,7 +17,7 @@
     mic: $("mic"), micLabel: $("mic-label"), apps: $("apps"), gear: $("gear"),
     overlay: $("settings"), setKey: $("set-key"), setKeyToggle: $("set-key-toggle"),
     setModel: $("set-model"), setVoice: $("set-voice"), setName: $("set-name"), setMsg: $("set-msg"),
-    setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"), setEngine: $("set-engine"), setServer: $("set-server"), setServerBox: $("set-server-box"), setVoiceTest: $("set-voice-test"),
+    setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"), setEngine: $("set-engine"), setServer: $("set-server"), setServerBox: $("set-server-box"), setVoiceTest: $("set-voice-test"), setBrain: $("set-brain"), setHermesBox: $("set-hermes-box"), setHUrl: $("set-h-url"), setHKey: $("set-h-key"), setHModel: $("set-h-model"),
   };
   const BASE_CFG = Object.assign({}, CFG);
 
@@ -427,6 +427,11 @@
       "Suas respostas são LIDAS EM VOZ ALTA: no máximo 2 frases curtas, texto simples, sem markdown, listas, emojis ou URLs.",
       "Se o usuário pedir para abrir/ver/assistir algo que corresponda a um app da lista, diga uma frase curta e termine com a marca [[ABRIR:pacote.exato]] copiando o pacote da lista.",
       "Se o app não estiver na lista, avise que não está instalado e NÃO use a marca.",
+      "Outras marcas (no FIM da resposta, só quando fizer sentido; nunca leia nem explique as marcas):",
+      "[[LEMBRAR:fato curto]] guarda algo duradouro que o usuário pediu para lembrar ou que é claramente importante (nomes, gostos, rotina).",
+      "[[ESQUECER:trecho]] apaga memórias com esse trecho; [[ESQUECER:*]] apaga tudo.",
+      "[[TIMER:segundos|nome]] cria timer ou lembrete, ex.: [[TIMER:600|macarrão]].",
+      memoryBlock(),
       "",
       "Apps instalados nesta TV:",
       appList,
@@ -477,6 +482,81 @@
     throw lastErr || new Error("FAILED");
   }
 
+  // ---------- Memória e ferramentas locais ----------
+  function loadMemory() {
+    try { const a = JSON.parse(storeGet("memory") || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  }
+  function saveMemory(a) { storeSet("memory", JSON.stringify(a.slice(-40))); }
+  function memoryBlock() {
+    const m = loadMemory();
+    return m.length ? "O que você já sabe sobre o usuário:\n" + m.map((x) => "- " + x).join("\n") : "";
+  }
+
+  function runActions(raw) {
+    const re = /\[\[(ABRIR|LEMBRAR|ESQUECER|TIMER):([^\]]*)\]\]/gi;
+    let m;
+    while ((m = re.exec(raw))) {
+      const k = m[1].toUpperCase(), v = m[2].trim();
+      if (k === "LEMBRAR" && v) {
+        const a = loadMemory();
+        if (a.indexOf(v) === -1) { a.push(v); saveMemory(a); }
+      } else if (k === "ESQUECER" && v) {
+        saveMemory(v === "*" ? [] : loadMemory().filter((x) => x.toLowerCase().indexOf(v.toLowerCase()) === -1));
+      } else if (k === "TIMER") {
+        const p = v.split("|"), sec = parseInt(p[0], 10);
+        if (sec > 0 && sec <= 86400) setTimeout(() => fireTimer((p[1] || "").trim()), sec * 1000);
+      }
+    }
+  }
+  function fireTimer(label) {
+    if (busy || state !== "idle" || settingsOpen) { setTimeout(() => fireTimer(label), 4000); return; }
+    say(label ? "Seu timer de " + label + " terminou." : "Seu timer terminou.");
+  }
+
+  // ---------- Hermes Agent / qualquer servidor compatível com OpenAI ----------
+  async function streamOpenAI(hist, system, onText) {
+    const base = (CFG.H_URL || "").trim().replace(/\/+$/, "");
+    if (!base) throw new Error("HERMES_URL");
+    const ctrl = new AbortController(); streamCtl = ctrl;
+    const to = setTimeout(() => ctrl.abort(), 90000);   // agente com ferramentas pode demorar
+    try {
+      const headers = { "Content-Type": "application/json" };
+      if (CFG.H_KEY) headers.Authorization = "Bearer " + CFG.H_KEY;
+      const r = await fetch(base + "/chat/completions", {
+        method: "POST", headers, signal: ctrl.signal,
+        body: JSON.stringify({
+          model: CFG.H_MODEL || "hermes-agent", stream: true,
+          messages: [{ role: "system", content: system }].concat(hist.map((m) => ({ role: m.role === "model" ? "assistant" : "user", content: m.text }))),
+        }),
+      });
+      if (!r.ok) { const e = new Error("HTTP_" + r.status); e.status = r.status; throw e; }
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "", acc = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+          if (line.indexOf("data:") !== 0 || line.indexOf("[DONE]") >= 0) continue;
+          try {
+            const d = JSON.parse(line.slice(5));   // eventos de progresso de ferramentas não têm "choices" e são ignorados
+            const t = d.choices && d.choices[0] && d.choices[0].delta && d.choices[0].delta.content;
+            if (t) { acc += t; onText(acc); }
+          } catch (e) {}
+        }
+      }
+      if (!acc) throw new Error("EMPTY");
+      return acc;
+    } finally { clearTimeout(to); if (streamCtl === ctrl) streamCtl = null; }
+  }
+
+  function streamBrain(hist, system, onText) {
+    if (CFG.BRAIN === "hermes") return streamOpenAI(hist, system, onText);
+    return streamGemini(hist.map((m) => ({ role: m.role, parts: [{ text: m.text }] })), system, onText);
+  }
+
   function parseModelJson(raw) {
     let t = String(raw).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     try {
@@ -492,6 +572,12 @@
   }
 
   function friendlyError(e) {
+    if (CFG.BRAIN === "hermes") {
+      if (e && e.message === "HERMES_URL") return "Falta o endereço do Hermes nas Configurações.";
+      if (e && e.name === "AbortError") return "O Hermes demorou demais para responder.";
+      if (e && (e.status === 401 || e.status === 403)) return "O Hermes recusou a chave. Verifique nas Configurações.";
+      return "Não consegui falar com o Hermes. Ele está ligado?";
+    }
     if (e && e.message === "NO_KEY") return "Falta a chave do Gemini. Configure na engrenagem.";
     if (e && e.name === "AbortError") return "O Gemini demorou demais para responder. Tente de novo.";
     if (e && (e.status === 400 || e.status === 403)) return "A chave do Gemini foi recusada. Verifique nas Configurações.";
@@ -513,6 +599,7 @@
     showAI("…");
     let text = localGreeting();
     try {
+      if (CFG.BRAIN === "hermes") throw new Error("SKIP");
       const h = new Date().getHours();
       const periodo = h < 5 ? "madrugada" : h < 12 ? "manhã" : h < 18 ? "tarde" : "noite";
       const raw = await callGemini(
@@ -536,7 +623,7 @@
   }
 
   const TAG_RE = /\[\[ABRIR:\s*([^\]\s]+)\s*\]\]/i;
-  function stripTag(t) { return t.replace(/\[\[ABRIR:[^\]]*\]\]/gi, "").replace(/\[\[[^\]]*\]?$/, "").trim(); }
+  function stripTag(t) { return t.replace(/\[\[(?:ABRIR|LEMBRAR|ESQUECER|TIMER):[^\]]*\]\]/gi, "").replace(/\[\[[^\]]*\]?$/, "").trim(); }
 
   async function ask(userText) {
     if (busy) return;
@@ -567,14 +654,15 @@
     };
 
     try {
-      const raw = await streamGemini(
-        history.map((m) => ({ role: m.role, parts: [{ text: m.text }] })), streamPrompt(),
+      const raw = await streamBrain(
+        history, streamPrompt(),
         (acc) => { if (sp.token !== tok) return; const c = stripTag(acc); showAI(c || "…", true); flush(c, false); });
       if (sp.token !== tok) { history.pop(); return; }
       const clean = stripTag(raw), tag = raw.match(TAG_RE);
+      runActions(raw);
       flush(clean, true);
       let speech = clean;
-      if (!speech) { speech = tag ? "Abrindo." : "Não entendi. Pode repetir?"; showAI(speech); enqueue(speech); }
+      if (!speech) { speech = tag ? "Abrindo." : (/\[\[/.test(raw) ? "Pronto." : "Não entendi. Pode repetir?"); showAI(speech); enqueue(speech); }
       history.push({ role: "model", text: speech });
       if (tag) {
         if (apps.find((a) => a.package === tag[1]) || !NATIVE) {
@@ -699,6 +787,10 @@
     CFG.USER_NAME = storeGet("user_name") || BASE_CFG.USER_NAME;
     CFG.ENGINE = storeGet("tts_engine") || "system";
     CFG.SERVER = storeGet("tts_server") || "";
+    CFG.BRAIN = storeGet("brain") || "gemini";
+    CFG.H_URL = storeGet("h_url") || "";
+    CFG.H_KEY = storeGet("h_key") || "";
+    CFG.H_MODEL = storeGet("h_model") || "hermes-agent";
     CFG.VOICES = { system: storeGet("voice_system") || storeGet("voice"), gemini: storeGet("voice_gemini"), edge: storeGet("voice_edge") };
   }
 
@@ -718,6 +810,8 @@
     populateVoices(eng, el.setServer.value.trim(), CFG.VOICES[eng]);
   }
 
+  function brainChanged() { el.setHermesBox.hidden = el.setBrain.value !== "hermes"; }
+
   function openSettings(firstRun) {
     settingsOpen = true;
     convo = false;
@@ -731,6 +825,11 @@
     el.setModel.value = CFG.GEMINI_MODEL || DEFAULT_MODEL;
     el.setName.value = CFG.USER_NAME || "";
     el.setEngine.value = CFG.ENGINE;
+    el.setBrain.value = CFG.BRAIN;
+    el.setHUrl.value = CFG.H_URL;
+    el.setHKey.value = CFG.H_KEY;
+    el.setHModel.value = CFG.H_MODEL;
+    brainChanged();
     el.setServer.value = CFG.SERVER;
     setMsg(firstRun ? "Digite ou cole sua chave do Gemini para começar." : "", "");
     el.overlay.hidden = false;
@@ -752,16 +851,32 @@
     const ok = storeSet("api_key", key) &&
       storeSet("model", el.setModel.value.trim() || DEFAULT_MODEL) &&
       storeSet("user_name", el.setName.value.trim()) &&
+      storeSet("brain", el.setBrain.value) &&
+      storeSet("h_url", el.setHUrl.value.trim()) &&
+      storeSet("h_key", el.setHKey.value.trim()) &&
+      storeSet("h_model", el.setHModel.value.trim() || "hermes-agent") &&
       storeSet("tts_engine", eng) &&
       storeSet("tts_server", el.setServer.value.trim()) &&
       storeSet("voice_" + eng, el.setVoice.value);
     if (!ok) { setMsg("Não consegui salvar. Tente de novo.", "err"); return; }
     closeSettings();
-    if (hasKey()) greet();
+    if (hasKey() || CFG.BRAIN === "hermes") greet();
     else { showAI("Chave removida. Configure uma nova para conversar."); setState("idle", IDLE_HINT); }
   }
 
   async function testSettings() {
+    if (el.setBrain.value === "hermes") {
+      const base = el.setHUrl.value.trim().replace(/\/+$/, "");
+      if (!base) { setMsg("Digite o endereço do Hermes.", "err"); return; }
+      setMsg("Testando…", "");
+      try {
+        const h = {};
+        if (el.setHKey.value.trim()) h.Authorization = "Bearer " + el.setHKey.value.trim();
+        const r = await fetch(base + "/models", { headers: h });
+        setMsg(r.ok ? "Hermes respondeu ✓ — lembre de tocar em Salvar." : "O servidor respondeu com erro " + r.status + ".", r.ok ? "ok" : "err");
+      } catch (e) { setMsg("Não consegui falar com o Hermes. Confira o endereço, a porta e o CORS.", "err"); }
+      return;
+    }
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
     if (!key) { setMsg("Digite a chave primeiro.", "err"); return; }
     CFG.GEMINI_API_KEY = key;
@@ -799,7 +914,7 @@
   }
 
   function settingsKey(ev) {
-    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setEngine], [el.setServer], [el.setVoice], [el.setName],
+    const rows = [[el.setBrain], [el.setHUrl], [el.setHKey], [el.setHModel], [el.setKey], [el.setKeyToggle], [el.setModel], [el.setEngine], [el.setServer], [el.setVoice], [el.setName],
                   [el.setSave, el.setTest, el.setVoiceTest, el.setCancel]]
       .map((r) => r.filter((x) => x.offsetParent !== null)).filter((r) => r.length);
     const active = document.activeElement;
@@ -827,6 +942,7 @@
     el.setCancel.addEventListener("click", closeSettings);
     el.setKeyToggle.addEventListener("click", toggleKeyVisibility);
     el.setEngine.addEventListener("change", engineChanged);
+    el.setBrain.addEventListener("change", brainChanged);
     el.setServer.addEventListener("change", () => { if (el.setEngine.value === "edge") engineChanged(); });
   }
 
@@ -932,7 +1048,7 @@
     el.mic.focus();
     setState("idle", IDLE_HINT);
     greet();
-    if (!hasKey()) openSettings(true);
+    if (!hasKey() && CFG.BRAIN !== "hermes") openSettings(true);
   }
 
   document.addEventListener("DOMContentLoaded", init);

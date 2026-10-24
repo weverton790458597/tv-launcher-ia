@@ -64,6 +64,21 @@
     <div class="settings-panel">
       <h2>Configurações</h2>
 
+      <label class="field-label" for="set-brain">Cérebro do assistente</label>
+      <select id="set-brain" class="field">
+        <option value="gemini">Gemini (Google)</option>
+        <option value="hermes">Hermes Agent / servidor compatível com OpenAI</option>
+      </select>
+
+      <div id="set-hermes-box" hidden>
+        <label class="field-label" for="set-h-url">Endereço da API (ex.: http://127.0.0.1:8642/v1)</label>
+        <input id="set-h-url" class="field" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://127.0.0.1:8642/v1">
+        <label class="field-label" for="set-h-key">Chave da API (API_SERVER_KEY)</label>
+        <input id="set-h-key" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <label class="field-label" for="set-h-model">Nome do modelo</label>
+        <input id="set-h-model" class="field" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="hermes-agent">
+      </div>
+
       <label class="field-label" for="set-key">Chave de API do Gemini</label>
       <input id="set-key" class="field" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="AIza…">
       <button id="set-key-toggle" class="btn small" type="button">Mostrar chave</button>
