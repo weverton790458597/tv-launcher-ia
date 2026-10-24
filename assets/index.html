@@ -71,7 +71,19 @@
       <label class="field-label" for="set-model">Modelo</label>
       <input id="set-model" class="field" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="gemini-3.8-flash">
 
-      <label class="field-label" for="set-voice">Voz do Assistente</label>
+      <label class="field-label" for="set-engine">Motor de voz</label>
+      <select id="set-engine" class="field">
+        <option value="system">Voz do sistema (rápida)</option>
+        <option value="gemini">Gemini — vozes neurais</option>
+        <option value="edge">Edge TTS — servidor no PC</option>
+      </select>
+
+      <div id="set-server-box" hidden>
+        <label class="field-label" for="set-server">Endereço do servidor Edge TTS (ex.: http://192.168.0.10:5000)</label>
+        <input id="set-server" class="field" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://192.168.0.10:5000">
+      </div>
+
+      <label class="field-label" for="set-voice">Voz do assistente</label>
       <select id="set-voice" class="field"></select>
 
       <label class="field-label" for="set-name">Seu nome (para a saudação)</label>
@@ -82,6 +94,7 @@
       <div class="btn-row">
         <button id="set-save" class="btn primary" type="button">Salvar</button>
         <button id="set-test" class="btn" type="button">Testar chave</button>
+        <button id="set-voice-test" class="btn" type="button">Ouvir voz</button>
         <button id="set-cancel" class="btn" type="button">Cancelar</button>
       </div>
       <div class="hint">↑ ↓ navegam · OK no campo abre o teclado · VOLTAR fecha</div>

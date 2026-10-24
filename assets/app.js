@@ -17,7 +17,7 @@
     mic: $("mic"), micLabel: $("mic-label"), apps: $("apps"), gear: $("gear"),
     overlay: $("settings"), setKey: $("set-key"), setKeyToggle: $("set-key-toggle"),
     setModel: $("set-model"), setVoice: $("set-voice"), setName: $("set-name"), setMsg: $("set-msg"),
-    setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"),
+    setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"), setEngine: $("set-engine"), setServer: $("set-server"), setServerBox: $("set-server-box"), setVoiceTest: $("set-voice-test"),
   };
   const BASE_CFG = Object.assign({}, CFG);
 
@@ -26,23 +26,25 @@
   let state = "idle";
   let pendingLaunch = null;
   let busy = false;
+  let convo = false, silentTurns = 0, streamCtl = null;
+  const TTS_MODEL = (window.CONFIG && window.CONFIG.TTS_MODEL) || "gemini-2.5-flash-preview-tts";
+  const GEMINI_VOICES = [["Kore","Kore — firme"],["Puck","Puck — animada"],["Zephyr","Zephyr — brilhante"],["Charon","Charon — informativa"],["Fenrir","Fenrir — empolgada"],["Leda","Leda — jovem"],["Orus","Orus — firme"],["Aoede","Aoede — leve"],["Callirrhoe","Callirrhoe — tranquila"],["Autonoe","Autonoe — brilhante"],["Enceladus","Enceladus — suave"],["Iapetus","Iapetus — clara"],["Umbriel","Umbriel — descontraída"],["Algieba","Algieba — suave"],["Despina","Despina — suave"],["Erinome","Erinome — clara"],["Algenib","Algenib — grave"],["Rasalgethi","Rasalgethi — informativa"],["Laomedeia","Laomedeia — animada"],["Achernar","Achernar — suave"],["Alnilam","Alnilam — firme"],["Schedar","Schedar — equilibrada"],["Gacrux","Gacrux — madura"],["Pulcherrima","Pulcherrima — direta"],["Achird","Achird — amigável"],["Zubenelgenubi","Zubenelgenubi — casual"],["Vindemiatrix","Vindemiatrix — gentil"],["Sadachbia","Sadachbia — vívida"],["Sadaltager","Sadaltager — culta"],["Sulafat","Sulafat — calorosa"]];
 
   function setState(s, statusText) {
     state = s;
     el.orb.dataset.state = s;
     document.body.dataset.state = s;
-    el.micLabel.textContent = s === "listening" ? "Ouvindo…" : "Falar";
+    el.micLabel.textContent = s === "listening" ? "Ouvindo…" : convo ? "Encerrar" : "Falar";
     el.mic.classList.toggle("active", s === "listening");
     if (statusText !== undefined) el.status.textContent = statusText;
   }
   const IDLE_HINT = "Pressione o botão de microfone do controle ou o botão Falar";
 
-  function showAI(text) {
+  function showAI(text, still) {
     el.ai.textContent = text;
     const n = (text || "").length;   // textos longos diminuem a fonte para caber no cartão
     el.ai.className = "ai-line" + (n > 260 ? " l2" : n > 130 ? " l1" : "");
-    void el.ai.offsetWidth;
-    el.ai.classList.add("swap");
+    if (!still) { void el.ai.offsetWidth; el.ai.classList.add("swap"); }
   }
   function showUser(text) { el.user.textContent = text ? "“" + text + "”" : ""; }
 
@@ -78,6 +80,13 @@
     renderApps();
   }
 
+  // Aceita URL, caminho ou base64 "puro" (sem data:) vindo do app nativo
+  function iconSrc(v) {
+    const t = String(v).trim();
+    if (/^(data:|https?:|file:|content:)/i.test(t) || t.length < 300) return t;
+    return "data:image/png;base64," + t.replace(/\s/g, "");
+  }
+
   function renderApps() {
     el.apps.textContent = "";
     if (!apps.length) {
@@ -100,7 +109,9 @@
       thumb.className = "thumb";
       if (a.icon) {
         const img = document.createElement("img");
-        img.src = a.icon;
+        img.className = "ic";
+        img.onload = () => { if (img.naturalHeight && img.naturalWidth / img.naturalHeight > 1.4) thumb.classList.add("banner"); };
+        img.src = iconSrc(a.icon);
         img.alt = "";
         img.decoding = "async";
         img.onerror = () => { img.remove(); thumb.textContent = (a.name || "?").charAt(0).toUpperCase(); };
@@ -134,60 +145,172 @@
     if (pendingLaunch) { clearTimeout(pendingLaunch.timer); pendingLaunch = null; }
   }
 
-  // Carregar vozes na interface
-  function loadVoices() {
-    if (!("speechSynthesis" in window)) return;
-    const voices = speechSynthesis.getVoices();
-    el.setVoice.innerHTML = '<option value="">Padrão do sistema</option>';
-    voices.forEach((v) => {
-      if (v.lang.includes("pt") || v.lang.includes("BR")) {
-        const opt = document.createElement("option");
-        opt.value = v.name;
-        opt.textContent = `${v.name} (${v.lang})`;
-        if (v.name === CFG.VOICE) opt.selected = true;
-        el.setVoice.appendChild(opt);
+  let voiceListToken = 0;
+  async function populateVoices(engine, server, selected) {
+    const tk = ++voiceListToken;
+    const fill = (items) => {
+      if (tk !== voiceListToken) return;
+      el.setVoice.textContent = "";
+      items.forEach(([v, n]) => {
+        const o = document.createElement("option");
+        o.value = v; o.textContent = n; if (v === selected) o.selected = true;
+        el.setVoice.appendChild(o);
+      });
+    };
+    if (engine === "gemini") return fill(GEMINI_VOICES);
+    if (engine === "edge") {
+      if (!server) return fill([["", "Informe o endereço do servidor"]]);
+      fill([["", "Carregando vozes…"]]);
+      try {
+        const r = await fetch(server.replace(/\/+$/, "") + "/vozes");
+        const list = await r.json();
+        fill(list.map((v) => [v.id, v.nome]));
+        setMsg("", "");
+      } catch (e) {
+        fill([["", "Servidor inacessível"]]);
+        setMsg("Não consegui acessar o servidor Edge TTS. Confira o endereço e se o PC está ligado.", "err");
       }
+      return;
+    }
+    const vs = "speechSynthesis" in window ? speechSynthesis.getVoices().filter((v) => /pt/i.test(v.lang)) : [];
+    fill([["", "Padrão do sistema"]].concat(vs.map((v) => [v.name, v.name + " (" + v.lang + ")"])));
+  }
+  if ("speechSynthesis" in window) {
+    speechSynthesis.onvoiceschanged = () => { if (settingsOpen && el.setEngine.value === "system") populateVoices("system", "", CFG.VOICES.system); };
+  }
+
+  // Fila de fala: cada frase é sintetizada em paralelo e tocada em ordem.
+  const sp = { token: 0, q: [], playing: false, started: false, finished: false, ended: false, release: null, nativeRes: null, src: null, audio: null, fresh: false };
+  let actx = null;
+
+  function unlockAudio() {
+    try {
+      if (!actx) { const C = window.AudioContext || window.webkitAudioContext; if (C) actx = new C(); }
+      if (actx && actx.state === "suspended") actx.resume();
+    } catch (e) {}
+  }
+  const GL = "https://generativelanguage.googleapis.com/v1beta/models/";
+
+  async function synthGemini(text) {
+    const r = await fetch(GL + encodeURIComponent(TTS_MODEL) + ":generateContent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": CFG.GEMINI_API_KEY },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text }] }],
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: CFG.VOICES.gemini || "Kore" } } } },
+      }),
+    });
+    if (!r.ok) throw new Error("HTTP_" + r.status);
+    const d = await r.json();
+    const part = d.candidates[0].content.parts.find((p) => p.inlineData);
+    return part.inlineData.data;   // PCM 16-bit, 24 kHz, mono (base64)
+  }
+  async function synthEdge(text) {
+    const url = CFG.SERVER.replace(/\/+$/, "") + "/tts?voz=" + encodeURIComponent(CFG.VOICES.edge || "pt-BR-FranciscaNeural") + "&texto=" + encodeURIComponent(text);
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("HTTP_" + r.status);
+    return URL.createObjectURL(await r.blob());
+  }
+
+  function playPcm(b64) {
+    return new Promise((res) => {
+      unlockAudio();
+      const bin = atob(b64), n = bin.length >> 1;
+      const buf = actx.createBuffer(1, n, 24000), ch = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) { let v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v & 0x8000) v -= 0x10000; ch[i] = v / 32768; }
+      const src = actx.createBufferSource();
+      src.buffer = buf; src.connect(actx.destination);
+      src.onended = () => res();
+      sp.src = src; sp.release = res;
+      src.start();
+    });
+  }
+  function playUrl(url) {
+    return new Promise((res) => {
+      const a = new Audio(url);
+      a.onended = a.onerror = () => { URL.revokeObjectURL(url); res(); };
+      sp.audio = a; sp.release = res;
+      a.play().catch(() => res());
+    });
+  }
+  function playSystem(text) {
+    return new Promise((res) => {
+      sp.release = res;
+      if ("speechSynthesis" in window) {
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = CFG.LOCALE;
+        const v = CFG.VOICES.system && speechSynthesis.getVoices().find((x) => x.name === CFG.VOICES.system);
+        if (v) u.voice = v;
+        u.onend = u.onerror = () => res();
+        const d = sp.fresh ? 80 : 0; sp.fresh = false;   // cancel() seguido de speak() imediato perde a fala em alguns WebViews
+        setTimeout(() => speechSynthesis.speak(u), d);
+      } else if (NATIVE) {
+        sp.nativeRes = res;
+        try { window.Android.speak(text); } catch (e) { res(); }
+      } else res();
     });
   }
 
-  if ("speechSynthesis" in window) {
-    speechSynthesis.onvoiceschanged = loadVoices;
-  }
-
-  // Cada fala recebe um número; eventos de falas antigas/canceladas são ignorados
-  // (evita o orb piscar e o app abrir antes da hora).
-  let ttsToken = 0;
-  function ttsEnd(token) { if (token === ttsToken) window.onNativeEvent("tts_end", ""); }
-
-  function speak(text) {
-    const token = ++ttsToken;
-    if ("speechSynthesis" in window) {
-      speechSynthesis.cancel();
-      setTimeout(() => {   // pequena pausa: cancel() seguido de speak() perde a fala em alguns WebViews
-        if (token !== ttsToken) return;
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = CFG.LOCALE;
-        if (CFG.VOICE) {
-          const v = speechSynthesis.getVoices().find((x) => x.name === CFG.VOICE);
-          if (v) u.voice = v;
-        }
-        u.onstart = () => { if (token === ttsToken) window.onNativeEvent("tts_start", ""); };
-        u.onend = u.onerror = () => ttsEnd(token);
-        speechSynthesis.speak(u);
-      }, 80);
-    } else if (NATIVE) {
-      try { window.Android.speak(text); return; } catch (e) {}
-      ttsEnd(token);
-    } else {
-      ttsEnd(token);
+  async function playItem(item, t) {
+    if (item.p) {
+      try {
+        const data = await item.p;
+        if (t !== sp.token) return;
+        if (data) { await (CFG.ENGINE === "gemini" ? playPcm(data) : playUrl(data)); return; }
+      } catch (e) {}
+      if (t !== sp.token) return;
     }
+    await playSystem(item.text);   // reserva: se o motor escolhido falhar, usa a voz do sistema
   }
+
+  async function pump() {
+    if (sp.playing) return;
+    const t = sp.token, item = sp.q.shift();
+    if (!item) {
+      if (sp.finished && !sp.ended) { sp.ended = true; speechDone(); }
+      return;
+    }
+    sp.playing = true;
+    if (!sp.started) { sp.started = true; setState("speaking", ""); }
+    try { await playItem(item, t); } catch (e) {}
+    if (t !== sp.token) return;
+    sp.playing = false;
+    pump();
+  }
+
+  function speechStop() {
+    sp.token++; sp.q = []; sp.playing = false; sp.fresh = true;
+    try { if (sp.src) sp.src.stop(); } catch (e) {}
+    try { if (sp.audio) sp.audio.pause(); } catch (e) {}
+    sp.src = sp.audio = null;
+    const r = sp.release; sp.release = null; sp.nativeRes = null;
+    if (r) r();
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    if (NATIVE) { try { window.Android.stopSpeaking(); } catch (e) {} }
+  }
+  function speechBegin() { speechStop(); sp.started = sp.finished = sp.ended = false; }
+  function enqueue(text) {
+    const item = { text, p: null };
+    if (CFG.ENGINE === "gemini" && actx) item.p = synthGemini(text);
+    else if (CFG.ENGINE === "edge" && CFG.SERVER) item.p = synthEdge(text);
+    if (item.p) item.p.catch(() => {});
+    sp.q.push(item);
+    pump();
+  }
+  function ttsFinish() { sp.finished = true; pump(); }
+  function speak(text) { speechBegin(); enqueue(text); ttsFinish(); }
 
   function stopSpeaking() {
-    ttsToken++;
-    if (NATIVE) { try { window.Android.stopSpeaking(); } catch (e) {} }
-    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    if (streamCtl) { try { streamCtl.abort(); } catch (e) {} }
+    speechStop();
     if (state === "speaking") setState("idle", IDLE_HINT);
+  }
+
+  // Fim da fala: abre app pendente ou volta a ouvir (conversa contínua)
+  function speechDone() {
+    if (state !== "listening") setState("idle", IDLE_HINT);
+    if (pendingLaunch) { const p = pendingLaunch; cancelPendingLaunch(); convo = false; setState(state); launchApp(p.package); return; }
+    if (convo && NATIVE && !settingsOpen) setTimeout(() => { if (convo && state === "idle" && !busy) startListen(); }, 300);
   }
 
   function systemPrompt() {
@@ -277,6 +400,64 @@
     return text;
   }
 
+  function streamPrompt() {
+    const appList = apps.slice(0, 150).map((a) => `- ${a.name} => ${a.package}`).join("\n") || "(nenhum)";
+    return [
+      `Você é o assistente de voz da Smart TV de ${CFG.USER_NAME || "o usuário"}. Responda sempre em português do Brasil.`,
+      `Data e hora atuais: ${new Date().toLocaleString(CFG.LOCALE)}.`,
+      "Suas respostas são LIDAS EM VOZ ALTA: no máximo 2 frases curtas, texto simples, sem markdown, listas, emojis ou URLs.",
+      "Se o usuário pedir para abrir/ver/assistir algo que corresponda a um app da lista, diga uma frase curta e termine com a marca [[ABRIR:pacote.exato]] copiando o pacote da lista.",
+      "Se o app não estiver na lista, avise que não está instalado e NÃO use a marca.",
+      "",
+      "Apps instalados nesta TV:",
+      appList,
+    ].join("\n");
+  }
+
+  async function streamGemini(contents, system, onText) {
+    if (!hasKey()) throw new Error("NO_KEY");
+    const m = (CFG.GEMINI_MODEL || DEFAULT_MODEL).trim().replace(/^models\//, "");
+    const body = { systemInstruction: { parts: [{ text: system }] }, contents,
+      generationConfig: { temperature: 0.6, maxOutputTokens: 1024, thinkingConfig: { thinkingLevel: "low" } } };
+    const models = m === FALLBACK_MODEL ? [m] : [m, FALLBACK_MODEL];
+    let lastErr = null;
+    for (const mod of models) {
+      const ctrl = new AbortController(); streamCtl = ctrl;
+      const to = setTimeout(() => ctrl.abort(), 25000);
+      let got = false;
+      try {
+        const r = await fetch(GL + encodeURIComponent(mod) + ":streamGenerateContent?alt=sse", {
+          method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": CFG.GEMINI_API_KEY },
+          body: JSON.stringify(body), signal: ctrl.signal });
+        if (!r.ok) { const e = new Error("HTTP_" + r.status); e.status = r.status; throw e; }
+        const reader = r.body.getReader(), dec = new TextDecoder();
+        let buf = "", acc = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+            if (line.indexOf("data:") !== 0) continue;
+            try {
+              const d = JSON.parse(line.slice(5));
+              const ps = d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts;
+              const t = ps ? ps.map((p) => p.text || "").join("") : "";
+              if (t) { acc += t; got = true; onText(acc); }
+            } catch (e) {}
+          }
+        }
+        if (!acc) throw new Error("EMPTY");
+        return acc;
+      } catch (e) {
+        lastErr = e;
+        if (got || (e.status && [429, 500, 502, 503, 504].indexOf(e.status) === -1) || e.name === "AbortError") throw e;
+      } finally { clearTimeout(to); if (streamCtl === ctrl) streamCtl = null; }
+    }
+    throw lastErr || new Error("FAILED");
+  }
+
   function parseModelJson(raw) {
     let t = String(raw).trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     try {
@@ -335,42 +516,53 @@
     speak(text);
   }
 
+  const TAG_RE = /\[\[ABRIR:\s*([^\]\s]+)\s*\]\]/i;
+  function stripTag(t) { return t.replace(/\[\[ABRIR:[^\]]*\]\]/gi, "").replace(/\[\[[^\]]*\]?$/, "").trim(); }
+
   async function ask(userText) {
     if (busy) return;
     busy = true;
     showUser(userText);
     setState("thinking", "Pensando…");
-
     history.push({ role: "user", text: userText });
     const maxMsgs = CFG.MAX_HISTORY_TURNS * 2;
     if (history.length > maxMsgs) history = history.slice(-maxMsgs);
 
-    try {
-      const raw = await callGemini(
-        history.map((m) => ({ role: m.role, parts: [{ text: m.text }] })),
-        systemPrompt(), 0.6
-      );
-      const r = parseModelJson(raw);
-      const speech = r.speech || (r.action === "open_app" ? "Abrindo." : "Não entendi. Pode repetir?");
-      history.push({ role: "model", text: speech });
-
-      if (r.action === "open_app" && r.package) {
-        const known = apps.find((a) => a.package === r.package);
-        if (known || !NATIVE) {
-          cancelPendingLaunch();
-          pendingLaunch = { package: r.package, timer: setTimeout(() => {
-            const p = pendingLaunch; pendingLaunch = null;
-            if (p) launchApp(p.package);
-          }, 3500) };
-          say(speech);
-        } else {
-          say("Não encontrei esse app instalado na TV.");
-        }
-      } else {
-        say(speech);
+    unlockAudio();
+    speechBegin();
+    const tok = sp.token;
+    let spoken = 0;
+    // Fala frase a frase enquanto o texto ainda está chegando
+    const flush = (clean, final) => {
+      for (;;) {
+        const m = clean.slice(spoken).match(final ? /^\s*([\s\S]*?[.!?…]+["”')\]]*)(?=\s|$)/ : /^\s*([\s\S]*?[.!?…]+["”')\]]*)(?=\s)/);
+        if (!m) break;
+        enqueue(m[1].trim()); spoken += m[0].length;
       }
+      if (final) { const r = clean.slice(spoken).trim(); if (r) enqueue(r); spoken = clean.length; }
+    };
+
+    try {
+      const raw = await streamGemini(
+        history.map((m) => ({ role: m.role, parts: [{ text: m.text }] })), streamPrompt(),
+        (acc) => { if (sp.token !== tok) return; const c = stripTag(acc); showAI(c || "…", true); flush(c, false); });
+      if (sp.token !== tok) { history.pop(); return; }
+      const clean = stripTag(raw), tag = raw.match(TAG_RE);
+      flush(clean, true);
+      let speech = clean;
+      if (!speech) { speech = tag ? "Abrindo." : "Não entendi. Pode repetir?"; showAI(speech); enqueue(speech); }
+      history.push({ role: "model", text: speech });
+      if (tag) {
+        if (apps.find((a) => a.package === tag[1]) || !NATIVE) {
+          cancelPendingLaunch();
+          pendingLaunch = { package: tag[1], timer: setTimeout(() => { const p = pendingLaunch; pendingLaunch = null; if (p) launchApp(p.package); }, 9000) };
+        } else { showAI("Não encontrei esse app instalado na TV."); enqueue("Não encontrei esse app instalado na TV."); }
+      }
+      ttsFinish();
     } catch (e) {
       history.pop();
+      if (sp.token !== tok) return;   // cancelado pelo usuário
+      convo = false;
       const msg = friendlyError(e);
       showAI(msg);
       setState("idle", IDLE_HINT);
@@ -380,21 +572,56 @@
     }
   }
 
-  function toggleMic() {
-    if (state === "listening") {
-      if (NATIVE) window.Android.stopListening();
-      return;
-    }
-    if (busy) return;
+  function startListen() {
+    cancelPendingLaunch();
+    speechStop();
+    showUser("");
+    if (NATIVE) { window.Android.startListening(); return; }
+    convo = false; setState(state);
+    const t = window.prompt("Fale (simulado) — digite o comando:");
+    if (t && t.trim()) ask(t.trim());
+  }
+
+  function endConvo() {
+    convo = false;
     cancelPendingLaunch();
     stopSpeaking();
-    showUser("");
-    if (NATIVE) {
-      window.Android.startListening();
-    } else {
-      const t = window.prompt("Fale (simulado) — digite o comando:");
-      if (t && t.trim()) ask(t.trim());
+    setState("idle", IDLE_HINT);
+  }
+
+  // Um toque inicia a conversa contínua; outro toque encerra
+  function toggleMic() {
+    unlockAudio();
+    if (state === "listening") {
+      convo = false;
+      if (NATIVE) { try { window.Android.stopListening(); } catch (e) {} }
+      setState("idle", IDLE_HINT);
+      return;
     }
+    if (convo) { endConvo(); return; }
+    if (busy) return;
+    convo = true; silentTurns = 0;
+    setState(state);
+    startListen();
+  }
+
+  function handleUtterance(text) {
+    if (/^(tchau|até logo|até mais|encerrar|pode parar|parar conversa)/i.test(text.trim())) {
+      convo = false; showUser(text); say("Até logo!"); return;
+    }
+    ask(text);
+  }
+
+  function sttError(p) {
+    const quiet = p === "no_match" || p === "timeout";
+    if (convo && quiet && ++silentTurns < 2) {
+      setTimeout(() => { if (convo && state !== "listening" && !busy) startListen(); }, 300);
+      return;
+    }
+    const wasConvo = convo;
+    convo = false;
+    setState("idle", IDLE_HINT);
+    showAI(wasConvo && quiet ? "Conversa encerrada por inatividade." : (STT_ERRORS[p] || "Erro no reconhecimento de voz."));
   }
 
   let settingsOpen = false;
@@ -419,7 +646,9 @@
     const savedModel = storeGet("model");
     CFG.GEMINI_MODEL = (savedModel && !/^gemini-(1\.|2\.0)/.test(savedModel)) ? savedModel : DEFAULT_MODEL;
     CFG.USER_NAME = storeGet("user_name") || BASE_CFG.USER_NAME;
-    CFG.VOICE = storeGet("voice") || "";
+    CFG.ENGINE = storeGet("tts_engine") || "system";
+    CFG.SERVER = storeGet("tts_server") || "";
+    CFG.VOICES = { system: storeGet("voice_system") || storeGet("voice"), gemini: storeGet("voice_gemini"), edge: storeGet("voice_edge") };
   }
 
   function hasKey() {
@@ -432,19 +661,29 @@
     el.setMsg.className = "set-msg" + (kind ? " " + kind : "");
   }
 
+  function engineChanged() {
+    const eng = el.setEngine.value;
+    el.setServerBox.hidden = eng !== "edge";
+    populateVoices(eng, el.setServer.value.trim(), CFG.VOICES[eng]);
+  }
+
   function openSettings(firstRun) {
     settingsOpen = true;
+    convo = false;
     cancelPendingLaunch();
     stopSpeaking();
     if (state === "listening" && NATIVE) { try { window.Android.stopListening(); } catch (e) {} }
+    setState("idle", IDLE_HINT);
     el.setKey.value = hasKey() ? CFG.GEMINI_API_KEY : "";
     el.setKey.type = "password";
     el.setKeyToggle.textContent = "Mostrar chave";
     el.setModel.value = CFG.GEMINI_MODEL || DEFAULT_MODEL;
     el.setName.value = CFG.USER_NAME || "";
-    loadVoices();
+    el.setEngine.value = CFG.ENGINE;
+    el.setServer.value = CFG.SERVER;
     setMsg(firstRun ? "Digite ou cole sua chave do Gemini para começar." : "", "");
     el.overlay.hidden = false;
+    engineChanged();
     el.setKey.focus();
   }
 
@@ -458,10 +697,13 @@
 
   function saveSettings() {
     const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
+    const eng = el.setEngine.value;
     const ok = storeSet("api_key", key) &&
       storeSet("model", el.setModel.value.trim() || DEFAULT_MODEL) &&
       storeSet("user_name", el.setName.value.trim()) &&
-      storeSet("voice", el.setVoice.value);
+      storeSet("tts_engine", eng) &&
+      storeSet("tts_server", el.setServer.value.trim()) &&
+      storeSet("voice_" + eng, el.setVoice.value);
     if (!ok) { setMsg("Não consegui salvar. Tente de novo.", "err"); return; }
     closeSettings();
     if (hasKey()) greet();
@@ -485,6 +727,20 @@
     }
   }
 
+  // Toca uma amostra com os valores que estão na tela (sem precisar salvar)
+  function testVoice() {
+    const eng = el.setEngine.value;
+    const key = el.setKey.value.trim().replace(/^["']|["']$/g, "");
+    if (key) CFG.GEMINI_API_KEY = key;
+    CFG.ENGINE = eng;
+    CFG.SERVER = el.setServer.value.trim();
+    CFG.VOICES[eng] = el.setVoice.value;
+    unlockAudio();
+    if (eng === "gemini" && !hasKey()) { setMsg("Digite a chave do Gemini para ouvir as vozes neurais.", "err"); return; }
+    setMsg("Reproduzindo…", "");
+    speak("Olá! Esta é a minha voz. Posso conversar com você na TV.");
+  }
+
   function toggleKeyVisibility() {
     const show = el.setKey.type === "password";
     el.setKey.type = show ? "text" : "password";
@@ -492,10 +748,11 @@
   }
 
   function settingsKey(ev) {
-    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setVoice], [el.setName],
-                  [el.setSave, el.setTest, el.setCancel]];
+    const rows = [[el.setKey], [el.setKeyToggle], [el.setModel], [el.setEngine], [el.setServer], [el.setVoice], [el.setName],
+                  [el.setSave, el.setTest, el.setVoiceTest, el.setCancel]]
+      .map((r) => r.filter((x) => x.offsetParent !== null)).filter((r) => r.length);
     const active = document.activeElement;
-    let r = rows.findIndex((row) => row.indexOf(active) !== -1);
+    const r = rows.findIndex((row) => row.indexOf(active) !== -1);
     if (r === -1) { el.setKey.focus(); return; }
     const c = rows[r].indexOf(active);
     const isInput = active.tagName === "INPUT" || active.tagName === "SELECT";
@@ -515,8 +772,11 @@
     el.gear.addEventListener("click", () => openSettings(false));
     el.setSave.addEventListener("click", saveSettings);
     el.setTest.addEventListener("click", testSettings);
+    el.setVoiceTest.addEventListener("click", testVoice);
     el.setCancel.addEventListener("click", closeSettings);
     el.setKeyToggle.addEventListener("click", toggleKeyVisibility);
+    el.setEngine.addEventListener("change", engineChanged);
+    el.setServer.addEventListener("change", () => { if (el.setEngine.value === "edge") engineChanged(); });
   }
 
   const STT_ERRORS = {
@@ -530,24 +790,15 @@
   window.onNativeEvent = function (type, payload) {
     switch (type) {
       case "mic_key": if (!settingsOpen) toggleMic(); break;
-      case "stt_start": setState("listening", "Ouvindo…"); showAI("Pode falar…"); break;
+      case "stt_start": setState("listening", convo ? "Ouvindo… (conversa contínua)" : "Ouvindo…"); showAI("Pode falar…"); break;
       case "stt_partial": showUser(payload); break;
-      case "stt_result": ask(payload); break;
-      case "stt_error":
-        setState("idle", IDLE_HINT);
-        showAI(STT_ERRORS[payload] || "Erro no reconhecimento de voz.");
-        break;
-      case "tts_start": setState("speaking", ""); break;
-      case "tts_end":
-        if (state === "speaking") setState("idle", IDLE_HINT);
-        if (pendingLaunch) {
-          const p = pendingLaunch; cancelPendingLaunch();
-          launchApp(p.package);
-        }
-        break;
+      case "stt_result": silentTurns = 0; handleUtterance(payload); break;
+      case "stt_error": sttError(payload); break;
+      case "tts_end": if (sp.nativeRes) { const r = sp.nativeRes; sp.nativeRes = null; r(); } break;   // fim do Android.speak
       case "home":
       case "back":
         if (settingsOpen) { closeSettings(); break; }
+        convo = false;
         cancelPendingLaunch();
         stopSpeaking();
         showUser("");
@@ -573,6 +824,7 @@
 
   document.addEventListener("keydown", (ev) => {
     const key = ev.key;
+    unlockAudio();
     const active = document.activeElement;
     const inApps = active && active.classList && active.classList.contains("app-tile");
     const list = tiles();
