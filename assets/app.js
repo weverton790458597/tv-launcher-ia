@@ -14,7 +14,7 @@
   const el = {
     clock: $("clock"), date: $("date"), net: $("net"), netLabel: $("net-label"),
     orb: $("orb"), user: $("user-line"), ai: $("ai-line"), status: $("status"),
-    mic: $("mic"), apps: $("apps"), gear: $("gear"),
+    mic: $("mic"), micLabel: $("mic-label"), apps: $("apps"), gear: $("gear"),
     overlay: $("settings"), setKey: $("set-key"), setKeyToggle: $("set-key-toggle"),
     setModel: $("set-model"), setVoice: $("set-voice"), setName: $("set-name"), setMsg: $("set-msg"),
     setSave: $("set-save"), setTest: $("set-test"), setCancel: $("set-cancel"),
@@ -30,12 +30,20 @@
   function setState(s, statusText) {
     state = s;
     el.orb.dataset.state = s;
+    document.body.dataset.state = s;
+    el.micLabel.textContent = s === "listening" ? "Ouvindo…" : "Falar";
     el.mic.classList.toggle("active", s === "listening");
     if (statusText !== undefined) el.status.textContent = statusText;
   }
   const IDLE_HINT = "Pressione o botão de microfone do controle ou o botão Falar";
 
-  function showAI(text) { el.ai.textContent = text; }
+  function showAI(text) {
+    el.ai.textContent = text;
+    const n = (text || "").length;   // textos longos diminuem a fonte para caber no cartão
+    el.ai.className = "ai-line" + (n > 260 ? " l2" : n > 130 ? " l1" : "");
+    void el.ai.offsetWidth;
+    el.ai.classList.add("swap");
+  }
   function showUser(text) { el.user.textContent = text ? "“" + text + "”" : ""; }
 
   function tickClock() {
@@ -72,6 +80,13 @@
 
   function renderApps() {
     el.apps.textContent = "";
+    if (!apps.length) {
+      const d = document.createElement("div");
+      d.className = "apps-empty";
+      d.textContent = "Nenhum app encontrado.";
+      el.apps.appendChild(d);
+      return;
+    }
     apps.forEach((a, i) => {
       const tile = document.createElement("div");
       tile.className = "app-tile";
@@ -79,6 +94,7 @@
       tile.setAttribute("role", "listitem");
       tile.dataset.row = "apps";
       tile.dataset.index = String(i);
+      tile.style.setProperty("--i", String(Math.min(i, 12)));
 
       const thumb = document.createElement("div");
       thumb.className = "thumb";
@@ -86,6 +102,8 @@
         const img = document.createElement("img");
         img.src = a.icon;
         img.alt = "";
+        img.decoding = "async";
+        img.onerror = () => { img.remove(); thumb.textContent = (a.name || "?").charAt(0).toUpperCase(); };
         thumb.appendChild(img);
       } else {
         thumb.textContent = (a.name || "?").charAt(0).toUpperCase();
@@ -136,31 +154,40 @@
     speechSynthesis.onvoiceschanged = loadVoices;
   }
 
-  function speak(text) {
-    if ("speechSynthesis" in window) {
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = CFG.LOCALE;
-      
-      const voices = speechSynthesis.getVoices();
-      if (CFG.VOICE) {
-        const selectedVoice = voices.find((v) => v.name === CFG.VOICE);
-        if (selectedVoice) u.voice = selectedVoice;
-      }
+  // Cada fala recebe um número; eventos de falas antigas/canceladas são ignorados
+  // (evita o orb piscar e o app abrir antes da hora).
+  let ttsToken = 0;
+  function ttsEnd(token) { if (token === ttsToken) window.onNativeEvent("tts_end", ""); }
 
-      u.onstart = () => window.onNativeEvent("tts_start", "");
-      u.onend = () => window.onNativeEvent("tts_end", "");
+  function speak(text) {
+    const token = ++ttsToken;
+    if ("speechSynthesis" in window) {
       speechSynthesis.cancel();
-      speechSynthesis.speak(u);
+      setTimeout(() => {   // pequena pausa: cancel() seguido de speak() perde a fala em alguns WebViews
+        if (token !== ttsToken) return;
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = CFG.LOCALE;
+        if (CFG.VOICE) {
+          const v = speechSynthesis.getVoices().find((x) => x.name === CFG.VOICE);
+          if (v) u.voice = v;
+        }
+        u.onstart = () => { if (token === ttsToken) window.onNativeEvent("tts_start", ""); };
+        u.onend = u.onerror = () => ttsEnd(token);
+        speechSynthesis.speak(u);
+      }, 80);
     } else if (NATIVE) {
       try { window.Android.speak(text); return; } catch (e) {}
+      ttsEnd(token);
     } else {
-      window.onNativeEvent("tts_end", "");
+      ttsEnd(token);
     }
   }
 
   function stopSpeaking() {
+    ttsToken++;
     if (NATIVE) { try { window.Android.stopSpeaking(); } catch (e) {} }
-    else if ("speechSynthesis" in window) speechSynthesis.cancel();
+    if ("speechSynthesis" in window) speechSynthesis.cancel();
+    if (state === "speaking") setState("idle", IDLE_HINT);
   }
 
   function systemPrompt() {
@@ -535,6 +562,13 @@
     }
   };
 
+  // Foca sem o navegador rolar a página e centraliza o item suavemente no carrossel
+  function focusTile(t) {
+    t.focus({ preventScroll: true });
+    const c = el.apps;
+    c.scrollTo({ left: Math.max(0, t.offsetLeft - (c.clientWidth - t.offsetWidth) / 2), behavior: "smooth" });
+  }
+
   function tiles() { return Array.from(el.apps.querySelectorAll(".app-tile")); }
 
   document.addEventListener("keydown", (ev) => {
@@ -554,12 +588,12 @@
     if (key === "ArrowLeft" || key === "ArrowRight") {
       if (inApps) {
         const i = list.indexOf(active) + (key === "ArrowRight" ? 1 : -1);
-        if (i >= 0 && i < list.length) { list[i].focus(); list[i].scrollIntoView({ inline: "center", block: "nearest" }); }
+        if (i >= 0 && i < list.length) focusTile(list[i]);
       }
       ev.preventDefault();
     } else if (key === "ArrowDown") {
       if (active === el.gear) el.mic.focus();
-      else if (!inApps && list.length) { list[0].focus(); }
+      else if (!inApps && list.length) { focusTile(list[0]); }
       ev.preventDefault();
     } else if (key === "ArrowUp") {
       if (inApps) el.mic.focus();
